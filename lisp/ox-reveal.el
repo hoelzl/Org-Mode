@@ -499,8 +499,9 @@ transitionSpeed: '%s',\n"
              (plist-get info :reveal-trans)
              (plist-get info :reveal-speed))
 
-     (when (plist-get info :reveal-autoslide)
-       (format "autoSlide: '%s',\n" (plist-get info :reveal-autoslide)))
+     (let ((autoslide (plist-get info :reveal-autoslide)))
+       (when (and autoslide (not (equal autoslide "default")))
+	   (format "autoSlide: '%s',\n" (plist-get info :reveal-autoslide))))
 
      ;; multiplexing - depends on defvar 'client-multiplex'
      (when (plist-get info :reveal-multiplex-id)
