@@ -58,6 +58,7 @@
     (:reveal-root "REVEAL_ROOT" nil org-reveal-root t)
     (:reveal-trans "REVEAL_TRANS" nil org-reveal-transition t)
     (:reveal-speed "REVEAL_SPEED" nil org-reveal-transition-speed t)
+    (:reveal-autoslide "REVEAL_AUTOSLIDE" nil org-reveal-autoslide t)
     (:reveal-theme "REVEAL_THEME" nil org-reveal-theme t)
     (:reveal-extra-css "REVEAL_EXTRA_CSS" nil nil nil)
     (:reveal-extra-js "REVEAL_EXTRA_JS" nil org-reveal-extra-js nil)
@@ -129,6 +130,12 @@ can be include."
 (defcustom org-reveal-transition-speed
   "default"
   "Reveal transistion speed."
+  :group 'org-export-reveal
+  :type 'string)
+
+(defcustom org-reveal-autoslide
+  "default"
+  "Reveal autoslide setting"
   :group 'org-export-reveal
   :type 'string)
 
@@ -491,6 +498,9 @@ transition: Reveal.getQueryHash().transition || '%s', // default/cube/page/conca
 transitionSpeed: '%s',\n"
              (plist-get info :reveal-trans)
              (plist-get info :reveal-speed))
+
+     (when (plist-get info :reveal-autoslide)
+       (format "autoSlide: '%s',\n" (plist-get info :reveal-autoslide)))
 
      ;; multiplexing - depends on defvar 'client-multiplex'
      (when (plist-get info :reveal-multiplex-id)
