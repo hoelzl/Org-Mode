@@ -1657,7 +1657,7 @@ In particular, this does handle wide and invisible characters."
 			      dline -1 dline))))
 
 ;;;###autoload
-(defun org-table-sort-lines (with-case &optional sorting-type)
+(defun org-table-sort-lines (with-case &optional sorting-type getkey-func compare-func)
   "Sort table lines according to the column at point.
 
 The position of point indicates the column to be used for
@@ -1677,8 +1677,15 @@ With prefix argument WITH-CASE, alphabetic sorting will be case-sensitive.
 
 If SORTING-TYPE is specified when this function is called from a Lisp
 program, no prompting will take place.  SORTING-TYPE must be a character,
-any of (?a ?A ?n ?N ?t ?T) where the capital letter indicate that sorting
-should be done in reverse order."
+any of (?a ?A ?n ?N ?t ?T ?f ?F) where the capital letters indicate that
+sorting should be done in reverse order.
+
+If the SORTING-TYPE is ?f or ?F, then GETKEY-FUNC specifies
+a function to be called to extract the key.  It must return either
+a string or a number that should serve as the sorting key for that
+row.  It will then use COMPARE-FUNC to compare entries.  If GETKEY-FUNC
+is specified interactively, the comparison will be either a string or
+numeric compare based on the type of the first key in the table."
   (interactive "P")
   (let* ((thisline (org-current-line))
 	 (thiscol (org-table-current-column))
@@ -1730,7 +1737,8 @@ should be done in reverse order."
 					(org-split-string x "[ \t]*|[ \t]*")))
 				  x))
 		      (org-split-string (buffer-substring beg end) "\n")))
-    (setq lns (org-do-sort lns "Table" with-case sorting-type))
+    (setq lns (org-table--do-sort
+	       lns "Table" with-case sorting-type getkey-func compare-func))
     (when org-table-overlay-coordinates
       (org-table-toggle-coordinate-overlays))
     (delete-region beg end)
@@ -1741,6 +1749,68 @@ should be done in reverse order."
     (org-table-goto-column thiscol)
     (when otc (org-table-toggle-coordinate-overlays))
     (message "%d lines sorted, based on column %d" (length lns) column)))
+
+(defun org-table--do-sort (table what &optional with-case sorting-type getkey-func compare-func)
+  "Sort TABLE of WHAT according to SORTING-TYPE.
+The user will be prompted for the SORTING-TYPE if the call to this
+function does not specify it.
+WHAT is only for the prompt, to indicate what is being sorted.
+The sorting key will be extracted from the car of the elements of
+the table. If WITH-CASE is non-nil, the sorting will be case-sensitive.
+
+If the SORTING-TYPE is ?f or ?F, then GETKEY-FUNC specifies
+a function to be called to extract the key.  It must return either
+a string or a number that should serve as the sorting key for that
+row.  It will then use COMPARE-FUNC to compare entries.  If GETKEY-FUNC
+is specified interactively, the comparison will be either a string or
+numeric compare based on the type of the first key in the table."
+  (unless sorting-type
+    (message
+     "Sort %s: [a]lphabetic, [n]umeric, [t]ime, [f]unc.  A/N/T/F means reversed:"
+     what)
+    (setq sorting-type (read-char-exclusive)))
+  (let (extractfun comparefun tempfun)
+    ;; Define the appropriate functions
+    (case sorting-type
+      ((?n ?N)
+       (setq extractfun #'string-to-number
+	     comparefun (if (= sorting-type ?n) #'< #'>)))
+      ((?a ?A)
+       (setq extractfun (if with-case (lambda(x) (org-sort-remove-invisible x))
+			  (lambda(x) (downcase (org-sort-remove-invisible x))))
+	     comparefun (if (= sorting-type ?a) #'string< #'org-string>)))
+      ((?t ?T)
+       (setq extractfun
+	     (lambda (x)
+	       (cond ((or (string-match org-ts-regexp x)
+			  (string-match org-ts-regexp-both x))
+		      (org-float-time
+		       (org-time-string-to-time (match-string 0 x))))
+		     ((string-match "[0-9]\\{1,2\\}:[0-9]\\{2\\}" x)
+		      (org-hh:mm-string-to-minutes x))
+		     (t 0)))
+	     comparefun (if (= sorting-type ?t) #'< #'>)))
+      ((?f ?F)
+       (setq tempfun (or getkey-func
+			 (intern (org-icompleting-read
+				  "Sort using function: "
+				  obarray #'fboundp t nil nil))))
+       (let ((extract-string-p (stringp (funcall tempfun (caar table)))))
+	 (setq extractfun (if (and extract-string-p (not with-case))
+			      (lambda (x) (downcase (funcall tempfun x)))
+			    tempfun))
+	 (setq comparefun (cond (compare-func
+				 (if (= sorting-type ?f) compare-func
+				   (lambda (a b) (funcall compare-func b a))))
+				(extract-string-p
+				 (if (= sorting-type ?f) #'string<
+				   #'org-string>))
+				(t (if (= sorting-type ?f) #'< #'>))))))
+      (t (error "Invalid sorting type `%c'" sorting-type)))
+
+    (sort (mapcar (lambda (x) (cons (funcall extractfun (car x)) (cdr x)))
+		  table)
+	  (lambda (a b) (funcall comparefun (car a) (car b))))))
 
 ;;;###autoload
 (defun org-table-cut-region (beg end)
@@ -3007,6 +3077,17 @@ list, 'literal is for the format specifier L."
 		   elements
 		   ",") "]"))))
 
+(defun org-table-message-once-per-second (t1 &rest args)
+  "If there has been more than one second since T1, display message.
+ARGS are passed as arguments to the `message' function.  Returns
+current time if a message is printed, otherwise returns T1.  If
+T1 is nil, always messages."
+  (let ((curtime (current-time)))
+    (if (or (not t1) (< 0 (nth 1 (time-subtract curtime t1))))
+	(progn (apply 'message args)
+	       curtime)
+      t1)))
+
 ;;;###autoload
 (defun org-table-recalculate (&optional all noalign)
   "Recalculate the current table line by applying all stored formulas.
@@ -3031,139 +3112,159 @@ known that the table will be realigned a little later anyway."
 	   (line-re org-table-dataline-regexp)
 	   (thisline (org-current-line))
 	   (thiscol (org-table-current-column))
+	   (log-first-time (current-time))
+	   (log-last-time log-first-time)
 	   seen-fields lhs1
 	   beg end entry eqlnum eqlname eqlname1 eql (cnt 0) eq a name name1)
       ;; Insert constants in all formulas
-      (setq eqlist
-	    (mapcar (lambda (x)
-		      (if (string-match "^@-?I+" (car x))
-			  (user-error "Can't assign to hline relative reference"))
-		      (when (string-match "\\`$[<>]" (car x))
-			(setq lhs1 (car x))
-			(setq x (cons (substring
-				       (org-table-formula-handle-first/last-rc
-					(car x)) 1)
-				      (cdr x)))
-			(if (assoc (car x) eqlist1)
-			    (user-error "\"%s=\" formula tries to overwrite existing formula for column %s"
+      (when eqlist
+	(setq eqlist
+	      (mapcar
+	       (lambda (x)
+		 (if (string-match "^@-?I+" (car x))
+		     (user-error "Can't assign to hline relative reference"))
+		 (when (string-match "\\`$[<>]" (car x))
+		   (setq lhs1 (car x))
+		   (setq x (cons (substring
+				  (org-table-formula-handle-first/last-rc
+				   (car x)) 1)
+				 (cdr x)))
+		   (if (assoc (car x) eqlist1)
+		       (user-error "\"%s=\" formula tries to overwrite existing formula for column %s"
 				   lhs1 (car x))))
-		      (cons
-		       (org-table-formula-handle-first/last-rc (car x))
-		       (org-table-formula-substitute-names
-			(org-table-formula-handle-first/last-rc (cdr x)))))
-		    eqlist))
-      ;; Split the equation list
-      (while (setq eq (pop eqlist))
-	(if (<= (string-to-char (car eq)) ?9)
-	    (push eq eqlnum)
-	  (push eq eqlname)))
-      (setq eqlnum (nreverse eqlnum) eqlname (nreverse eqlname))
-      ;; Expand ranges in lhs of formulas
-      (setq eqlname (org-table-expand-lhs-ranges eqlname))
+		 (cons
+		  (org-table-formula-handle-first/last-rc (car x))
+		  (org-table-formula-substitute-names
+		   (org-table-formula-handle-first/last-rc (cdr x)))))
+	       eqlist))
+	;; Split the equation list
+	(while (setq eq (pop eqlist))
+	  (if (<= (string-to-char (car eq)) ?9)
+	      (push eq eqlnum)
+	    (push eq eqlname)))
+	(setq eqlnum (nreverse eqlnum) eqlname (nreverse eqlname))
+	;; Expand ranges in lhs of formulas
+	(setq eqlname (org-table-expand-lhs-ranges eqlname))
 
-      ;; Get the correct line range to process
-      (if all
-	  (progn
-	    (setq end (move-marker (make-marker) (1+ (org-table-end))))
-	    (goto-char (setq beg (org-table-begin)))
-	    (if (re-search-forward org-table-calculate-mark-regexp end t)
-		;; This is a table with marked lines, compute selected lines
-		(setq line-re org-table-recalculate-regexp)
-	      ;; Move forward to the first non-header line
-	      (if (and (re-search-forward org-table-dataline-regexp end t)
-		       (re-search-forward org-table-hline-regexp end t)
-		       (re-search-forward org-table-dataline-regexp end t))
-		  (setq beg (match-beginning 0))
-		nil))) ;; just leave beg where it is
-	(setq beg (point-at-bol)
-	      end (move-marker (make-marker) (1+ (point-at-eol)))))
-      (goto-char beg)
-      (and all (message "Re-applying formulas to full table..."))
+	;; Get the correct line range to process
+	(if all
+	    (progn
+	      (setq end (move-marker (make-marker) (1+ (org-table-end))))
+	      (goto-char (setq beg (org-table-begin)))
+	      (if (re-search-forward org-table-calculate-mark-regexp end t)
+		  ;; This is a table with marked lines, compute selected lines
+		  (setq line-re org-table-recalculate-regexp)
+		;; Move forward to the first non-header line
+		(if (and (re-search-forward org-table-dataline-regexp end t)
+			 (re-search-forward org-table-hline-regexp end t)
+			 (re-search-forward org-table-dataline-regexp end t))
+		    (setq beg (match-beginning 0))
+		  nil))) ;; just leave beg where it is
+	  (setq beg (point-at-bol)
+		end (move-marker (make-marker) (1+ (point-at-eol)))))
+	(goto-char beg)
 
-      ;; First find the named fields, and mark them untouchable.
-      ;; Also check if several field/range formulas try to set the same field.
-      (remove-text-properties beg end '(org-untouchable t))
-      (while (setq eq (pop eqlname))
-	(setq name (car eq)
-	      a (assoc name org-table-named-field-locations))
-	(setq name1 name)
-	(if a (setq name1 (format "@%d$%d" (org-table-line-to-dline (nth 1 a))
-				  (nth 2 a))))
-	(when (member name1 seen-fields)
-	  (user-error "Several field/range formulas try to set %s" name1))
-	(push name1 seen-fields)
+	;; First find the named fields, and mark them untouchable.
+	;; Also check if several field/range formulas try to set the same field.
+	(remove-text-properties beg end '(org-untouchable t))
+	(while (setq eq (pop eqlname))
+	  (setq name (car eq)
+		a (assoc name org-table-named-field-locations))
+	  (setq name1 name)
+	  (if a (setq name1 (format "@%d$%d" (org-table-line-to-dline (nth 1 a))
+				    (nth 2 a))))
+	  (when (member name1 seen-fields)
+	    (user-error "Several field/range formulas try to set %s" name1))
+	  (push name1 seen-fields)
 
-	(and (not a)
-	     (string-match "@\\([0-9]+\\)\\$\\([0-9]+\\)" name)
-	     (setq a (list name
-			   (condition-case nil
-			       (aref org-table-dlines
-				     (string-to-number (match-string 1 name)))
-			     (error (user-error "Invalid row number in %s"
-					   name)))
-			   (string-to-number (match-string 2 name)))))
-	(when (and a (or all (equal (nth 1 a) thisline)))
-	  (message "Re-applying formula to field: %s" name)
-	  (org-goto-line (nth 1 a))
-	  (org-table-goto-column (nth 2 a))
-	  (push (append a (list (cdr eq))) eqlname1)
-	  (org-table-put-field-property :org-untouchable t)))
-      (setq eqlname1 (nreverse eqlname1))
+	  (and (not a)
+	       (string-match "@\\([0-9]+\\)\\$\\([0-9]+\\)" name)
+	       (setq a (list name
+			     (condition-case nil
+				 (aref org-table-dlines
+				       (string-to-number (match-string 1 name)))
+			       (error (user-error "Invalid row number in %s"
+						  name)))
+			     (string-to-number (match-string 2 name)))))
+	  (when (and a (or all (equal (nth 1 a) thisline)))
+	    (setq log-last-time
+		  (org-table-message-once-per-second
+		   (and all log-last-time)
+		   "Re-applying formula to field: %s" name))
+	    (org-goto-line (nth 1 a))
+	    (org-table-goto-column (nth 2 a))
+	    (push (append a (list (cdr eq))) eqlname1)
+	    (org-table-put-field-property :org-untouchable t)))
+	(setq eqlname1 (nreverse eqlname1))
 
-      ;; Now evaluate the column formulas, but skip fields covered by
-      ;; field formulas
-      (goto-char beg)
-      (while (re-search-forward line-re end t)
-	(unless (string-match "^ *[_^!$/] *$" (org-table-get-field 1))
-	  ;; Unprotected line, recalculate
-	  (and all (message "Re-applying formulas to full table...(line %d)"
-			    (setq cnt (1+ cnt))))
-	  (setq org-last-recalc-line (org-current-line))
-	  (setq eql eqlnum)
-	  (while (setq entry (pop eql))
-	    (org-goto-line org-last-recalc-line)
-	    (org-table-goto-column (string-to-number (car entry)) nil 'force)
-	    (unless (get-text-property (point) :org-untouchable)
-	      (org-table-eval-formula nil (cdr entry)
-				      'noalign 'nocst 'nostore 'noanalysis)))))
+	;; Now evaluate the column formulas, but skip fields covered
+	;; by field formulas
+	(goto-char beg)
+	(while (re-search-forward line-re end t)
+	  (unless (string-match "^ *[_^!$/] *$" (org-table-get-field 1))
+	    ;; Unprotected line, recalculate
+	    (setq cnt (1+ cnt))
+	    (and all (setq log-last-time
+			   (org-table-message-once-per-second
+			    log-last-time
+			    "Re-applying formulas to full table...(line %d)" cnt)))
+	    (setq org-last-recalc-line (org-current-line))
+	    (setq eql eqlnum)
+	    (while (setq entry (pop eql))
+	      (org-goto-line org-last-recalc-line)
+	      (org-table-goto-column (string-to-number (car entry)) nil 'force)
+	      (unless (get-text-property (point) :org-untouchable)
+		(org-table-eval-formula
+		 nil (cdr entry)
+		 'noalign 'nocst 'nostore 'noanalysis)))))
 
-      ;; Now evaluate the field formulas
-      (while (setq eq (pop eqlname1))
-	(message "Re-applying formula to field: %s" (car eq))
-	(org-goto-line (nth 1 eq))
-	(let ((column-target (nth 2 eq)))
-	  (when (> column-target 1000)
-	    (user-error "Formula column target too large"))
-	  (let* ((column-count (progn (end-of-line)
-				      (1- (org-table-current-column))))
-		 (create-new-column
-		  (and (> column-target column-count)
-		       (or (eq org-table-formula-create-columns t)
-			   (and
-			    (eq org-table-formula-create-columns 'warn)
-			    (progn
-			      (org-display-warning "Out-of-bounds formula added columns")
-			      t))
-			   (and
-			    (eq org-table-formula-create-columns 'prompt)
-			    (yes-or-no-p "Out-of-bounds formula. Add columns?"))))))
-	    (org-table-goto-column column-target nil create-new-column))
+	;; Now evaluate the field formulas
+	(while (setq eq (pop eqlname1))
+	  (setq log-last-time
+		(org-table-message-once-per-second
+		 (and all log-last-time)
+		 "Re-applying formula to field: %s" (car eq)))
+	  (org-goto-line (nth 1 eq))
+	  (let ((column-target (nth 2 eq)))
+	    (when (> column-target 1000)
+	      (user-error "Formula column target too large"))
+	    (let* ((column-count (progn (end-of-line)
+					(1- (org-table-current-column))))
+		   (create-new-column
+		    (and (> column-target column-count)
+			 (or (eq org-table-formula-create-columns t)
+			     (and
+			      (eq org-table-formula-create-columns 'warn)
+			      (progn
+				(org-display-warning
+				 "Out-of-bounds formula added columns")
+				t))
+			     (and
+			      (eq org-table-formula-create-columns 'prompt)
+			      (yes-or-no-p
+			       "Out-of-bounds formula. Add columns?"))))))
+	      (org-table-goto-column column-target nil create-new-column))
 
-	  (org-table-eval-formula nil (nth 3 eq) 'noalign 'nocst
-				  'nostore 'noanalysis)))
+	    (org-table-eval-formula nil (nth 3 eq) 'noalign 'nocst
+				    'nostore 'noanalysis)))
 
-      (org-goto-line thisline)
-      (org-table-goto-column thiscol)
-      (remove-text-properties (point-min) (point-max) '(org-untouchable t))
-      (or noalign (and org-table-may-need-update (org-table-align))
-	  (and all (message "Re-applying formulas to %d lines...done" cnt)))
+	(org-goto-line thisline)
+	(org-table-goto-column thiscol)
+	(remove-text-properties (point-min) (point-max) '(org-untouchable t))
+	(or noalign (and org-table-may-need-update (org-table-align))
+	    (and all (org-table-message-once-per-second
+		      log-first-time
+		      "Re-applying formulas to %d lines...done" cnt)))
 
-      ;; back to initial position
-      (message "Re-applying formulas...done")
-      (org-goto-line thisline)
-      (org-table-goto-column thiscol)
-      (or noalign (and org-table-may-need-update (org-table-align))
-	  (and all (message "Re-applying formulas...done"))))))
+
+	;; back to initial position
+	(org-table-message-once-per-second
+         (and all log-first-time)
+         "Re-applying formulas...done")
+
+	(org-goto-line thisline)
+	(org-table-goto-column thiscol)
+	(or noalign (and org-table-may-need-update (org-table-align)))))))
 
 ;;;###autoload
 (defun org-table-iterate (&optional arg)

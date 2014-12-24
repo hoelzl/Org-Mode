@@ -2953,7 +2953,10 @@ If this variable is set, `org-log-state-notes-insert-after-drawers'
 will be ignored.
 
 You can set the property LOG_INTO_DRAWER to overrule this setting for
-a subtree."
+a subtree.
+
+Do not check directly this variable in a Lisp program.  Call
+function `org-log-into-drawer' instead."
   :group 'org-todo
   :group 'org-progress
   :type '(choice
@@ -2964,15 +2967,17 @@ a subtree."
 (org-defvaralias 'org-log-state-notes-into-drawer 'org-log-into-drawer)
 
 (defun org-log-into-drawer ()
-  "Return the value of `org-log-into-drawer', but let properties overrule.
-If the current entry has or inherits a LOG_INTO_DRAWER property, it will be
-used instead of the default value."
+  "Name of the log drawer, as a string, or nil.
+This is the value of `org-log-into-drawer'.  However, if the
+current entry has or inherits a LOG_INTO_DRAWER property, it will
+be used instead of the default value."
   (let ((p (org-entry-get nil "LOG_INTO_DRAWER" 'inherit t)))
-    (cond
-     ((not p) org-log-into-drawer)
-     ((equal p "nil") nil)
-     ((equal p "t") "LOGBOOK")
-     (t p))))
+    (cond ((equal p "nil") nil)
+	  ((equal p "t") "LOGBOOK")
+	  ((stringp p) p)
+	  (p "LOGBOOK")
+	  ((stringp org-log-into-drawer) org-log-into-drawer)
+	  (org-log-into-drawer "LOGBOOK"))))
 
 (defcustom org-log-state-notes-insert-after-drawers nil
   "Non-nil means insert state change notes after any drawers in entry.
@@ -4702,24 +4707,25 @@ collapsed state."
   :group 'org-sparse-trees
   :type 'boolean)
 
-(defcustom org-sparse-tree-default-date-type 'scheduled-or-deadline
+(defcustom org-sparse-tree-default-date-type nil
   "The default date type when building a sparse tree.
 When this is nil, a date is a scheduled or a deadline timestamp.
 Otherwise, these types are allowed:
 
         all: all timestamps
      active: only active timestamps (<...>)
-   inactive: only inactive timestamps (<...)
+   inactive: only inactive timestamps ([...])
   scheduled: only scheduled timestamps
    deadline: only deadline timestamps"
-  :type '(choice (const :tag "Scheduled or deadline" scheduled-or-deadline)
+  :type '(choice (const :tag "Scheduled or deadline" nil)
 		 (const :tag "All timestamps" all)
 		 (const :tag "Only active timestamps" active)
 		 (const :tag "Only inactive timestamps" inactive)
 		 (const :tag "Only scheduled timestamps" scheduled)
 		 (const :tag "Only deadline timestamps" deadline)
 		 (const :tag "Only closed timestamps" closed))
-  :version "24.3"
+  :version "25.1"
+  :package-version '(Org . "8.3")
   :group 'org-sparse-trees)
 
 (defun org-cycle-hide-archived-subtrees (state)
@@ -4745,13 +4751,14 @@ Otherwise, these types are allowed:
 
 (defun org-hide-archived-subtrees (beg end)
   "Re-hide all archived subtrees after a visibility state change."
-  (save-excursion
-    (let* ((re (concat ":" org-archive-tag ":")))
-      (goto-char beg)
-      (while (re-search-forward re end t)
-	(when (org-at-heading-p)
-	  (org-flag-subtree t)
-	  (org-end-of-subtree t))))))
+  (org-with-wide-buffer
+   (let ((case-fold-search nil)
+	 (re (concat org-outline-regexp-bol ".*:" org-archive-tag ":")))
+     (goto-char beg)
+     (while (and (< (point) end) (re-search-forward re end t))
+       (when (member org-archive-tag (org-get-tags))
+	 (org-flag-subtree t)
+	 (org-end-of-subtree t))))))
 
 (declare-function outline-end-of-heading "outline" ())
 (declare-function outline-flag-region "outline" (from to flag))
@@ -6230,13 +6237,16 @@ done, nil otherwise."
 
 (defun org-outline-level ()
   "Compute the outline level of the heading at point.
-If this is called at a normal headline, the level is the number of stars.
-Use `org-reduced-level' to remove the effect of `org-odd-levels'."
-  (save-excursion
-    (if (not (ignore-errors (org-back-to-heading t)))
-	0
-      (looking-at org-outline-regexp)
-      (1- (- (match-end 0) (match-beginning 0))))))
+
+If this is called at a normal headline, the level is the number
+of stars.  Use `org-reduced-level' to remove the effect of
+`org-odd-levels'.  Unlike to `org-current-level', this functions
+takes into consideration inline tasks."
+  (org-with-wide-buffer
+   (end-of-line)
+   (if (re-search-backward org-outline-regexp-bol nil t)
+       (1- (- (match-end 0) (match-beginning 0)))
+     0)))
 
 (defvar org-font-lock-keywords nil)
 
@@ -8076,11 +8086,12 @@ in the region."
 
 (defun org-current-level ()
   "Return the level of the current entry, or nil if before the first headline.
-The level is the number of stars at the beginning of the headline."
-  (save-excursion
-    (org-with-limited-levels
-     (if (ignore-errors (org-back-to-heading t))
-	 (funcall outline-level)))))
+The level is the number of stars at the beginning of the
+headline.  Use `org-reduced-level' to remove the effect of
+`org-odd-levels'.  Unlike to `org-outline-level', this function
+ignores inlinetasks."
+  (let ((level (org-with-limited-levels (org-outline-level))))
+    (and (> level 0) level)))
 
 (defun org-get-previous-line-level ()
   "Return the outline depth of the last headline before the current line.
@@ -9050,51 +9061,6 @@ When sorting is done, call `org-after-sorting-entries-or-items-hook'."
 	(search-forward cmstr nil t)
 	(move-marker org-clock-marker (point))))
     (message "Sorting entries...done")))
-
-(defun org-do-sort (table what &optional with-case sorting-type)
-  "Sort TABLE of WHAT according to SORTING-TYPE.
-The user will be prompted for the SORTING-TYPE if the call to this
-function does not specify it.
-WHAT is only for the prompt, to indicate what is being sorted.
-The sorting key will be extracted from the car of the elements of
-the table.
-If WITH-CASE is non-nil, the sorting will be case-sensitive."
-  (unless sorting-type
-    (message
-     "Sort %s: [a]lphabetic, [n]umeric, [t]ime.  A/N/T means reversed:"
-     what)
-    (setq sorting-type (read-char-exclusive)))
-  (let ((dcst (downcase sorting-type))
-	extractfun comparefun)
-    ;; Define the appropriate functions
-    (cond
-     ((= dcst ?n)
-      (setq extractfun 'string-to-number
-	    comparefun (if (= dcst sorting-type) '< '>)))
-     ((= dcst ?a)
-      (setq extractfun (if with-case (lambda(x) (org-sort-remove-invisible x))
-			 (lambda(x) (downcase (org-sort-remove-invisible x))))
-	    comparefun (if (= dcst sorting-type)
-			   'string<
-			 (lambda (a b) (and (not (string< a b))
-					    (not (string= a b)))))))
-     ((= dcst ?t)
-      (setq extractfun
-	    (lambda (x)
-	      (cond ((or (string-match org-ts-regexp x)
-			 (string-match org-ts-regexp-both x))
-		     (org-float-time
-		      (org-time-string-to-time (match-string 0 x))))
-		    ((string-match "[0-9]\\{1,2\\}:[0-9]\\{2\\}" x)
-		     (org-hh:mm-string-to-minutes x))
-		    (t 0)))
-	    comparefun (if (= dcst sorting-type) '< '>)))
-     (t (error "Invalid sorting type `%c'" sorting-type)))
-
-    (sort (mapcar (lambda (x) (cons (funcall extractfun (car x)) (cdr x)))
-		  table)
-	  (lambda (a b) (funcall comparefun (car a) (car b))))))
-
 
 ;;; The orgstruct minor mode
 
@@ -13487,6 +13453,20 @@ nil."
 (defvar org-time-was-given) ; dynamically scoped parameter
 (defvar org-end-time-was-given) ; dynamically scoped parameter
 
+(defun org-at-planning-p ()
+  "Non-nil when point is on a planning info line."
+  ;; This is as accurate and faster than `org-element-at-point' since
+  ;; planning info location is fixed in the section.
+  (org-with-wide-buffer
+   (beginning-of-line)
+   (and (org-looking-at-p org-planning-line-re)
+	(eq (point)
+	    (ignore-errors
+	      (if (and (featurep 'org-inlinetask) (org-inlinetask-in-task-p))
+		  (org-back-to-heading t)
+		(org-with-limited-levels (org-back-to-heading t)))
+	      (line-beginning-position 2))))))
+
 (defun org-add-planning-info (what &optional time &rest remove)
   "Insert new timestamp with keyword in the planning line.
 WHAT indicates what kind of time stamp to add.  It is a symbol
@@ -13607,36 +13587,35 @@ narrowing."
    (when (looking-at org-property-drawer-re)
      (goto-char (match-end 0))
      (forward-line))
-   (if (org-at-heading-p) (point)
-     (let ((end (save-excursion (outline-next-heading) (point)))
-	   (drawer (cond ((stringp org-log-into-drawer) org-log-into-drawer)
-			 (org-log-into-drawer "LOGBOOK"))))
-       (cond
-	(drawer
-	 (let ((regexp (concat "^[ \t]*:" (regexp-quote drawer) ":[ \t]*$"))
-	       (case-fold-search t))
-	   (catch 'exit
-	     ;; Try to find existing drawer.
-	     (while (re-search-forward regexp end t)
-	       (let ((element (org-element-at-point)))
-		 (when (eq (org-element-type element) 'drawer)
-		   (let ((cend  (org-element-property :contents-end element)))
-		     (when (and (not org-log-states-order-reversed) cend)
-		       (goto-char cend)))
-		   (throw 'exit nil))))
-	     ;; No drawer found.  Create one, if permitted.
-	     (when create
-	       (unless (bolp) (insert "\n"))
-	       (let ((beg (point)))
-		 (insert ":" drawer ":\n:END:\n")
-		 (org-indent-region beg (point)))
-	       (end-of-line -1)))))
-	(org-log-state-notes-insert-after-drawers
-	 (while (and (looking-at org-drawer-regexp)
-		     (progn (goto-char (match-end 0))
-			    (re-search-forward org-property-end-re end t)))
-	   (forward-line)))))
-     (if (bolp) (point) (line-beginning-position 2)))))
+   (let ((end (if (org-at-heading-p) (point)
+		(save-excursion (outline-next-heading) (point))))
+	 (drawer (org-log-into-drawer)))
+     (cond
+      (drawer
+       (let ((regexp (concat "^[ \t]*:" (regexp-quote drawer) ":[ \t]*$"))
+	     (case-fold-search t))
+	 (catch 'exit
+	   ;; Try to find existing drawer.
+	   (while (re-search-forward regexp end t)
+	     (let ((element (org-element-at-point)))
+	       (when (eq (org-element-type element) 'drawer)
+		 (let ((cend  (org-element-property :contents-end element)))
+		   (when (and (not org-log-states-order-reversed) cend)
+		     (goto-char cend)))
+		 (throw 'exit nil))))
+	   ;; No drawer found.  Create one, if permitted.
+	   (when create
+	     (unless (bolp) (insert "\n"))
+	     (let ((beg (point)))
+	       (insert ":" drawer ":\n:END:\n")
+	       (org-indent-region beg (point)))
+	     (end-of-line -1)))))
+      (org-log-state-notes-insert-after-drawers
+       (while (and (looking-at org-drawer-regexp)
+		   (progn (goto-char (match-end 0))
+			  (re-search-forward org-property-end-re end t)))
+	 (forward-line)))))
+   (if (bolp) (point) (line-beginning-position 2))))
 
 (defun org-add-log-setup (&optional purpose state prev-state findpos how extra)
   "Set up the post command hook to take a note.
@@ -13849,7 +13828,6 @@ D      Show deadlines and scheduled items between a date range."
 	     (deadline "only deadline")
 	     (active "only active timestamps")
 	     (inactive "only inactive timestamps")
-	     (scheduled-or-deadline "scheduled/deadline")
 	     (closed "with a closed time-stamp")
 	     (otherwise "scheduled/deadline")))
   (let ((answer (read-char-exclusive)))
@@ -13857,8 +13835,8 @@ D      Show deadlines and scheduled items between a date range."
       (?c
        (org-sparse-tree
 	arg
-	(cadr (memq type '(scheduled-or-deadline all scheduled deadline active
-						 inactive closed)))))
+	(cadr
+	 (memq type '(nil all scheduled deadline active inactive closed)))))
       (?d (call-interactively 'org-check-deadlines))
       (?b (call-interactively 'org-check-before-date))
       (?a (call-interactively 'org-check-after-date))
@@ -16728,9 +16706,10 @@ user."
 		    (setcar (nthcdr 1 org-defdecode) 59)
 		    (setq org-def (apply 'encode-time org-defdecode)
 			  org-defdecode (decode-time org-def)))))
+         (cur-frame (selected-frame))
 	 (mouse-autoselect-window nil) ; Don't let the mouse jump
 	 (calendar-frame-setup nil)
-	 (calendar-setup nil)
+	 (calendar-setup (when (eq calendar-setup 'calendar-only) 'calendar-only))
 	 (calendar-move-hook nil)
 	 (calendar-view-diary-initially-flag nil)
 	 (calendar-view-holidays-initially-flag nil)
@@ -16738,7 +16717,7 @@ user."
 		   (if org-with-time "%Y-%m-%d %H:%M" "%Y-%m-%d") org-def))
 	 (prompt (concat (if prompt (concat prompt " ") "")
 			 (format "Date+time [%s]: " timestr)))
-	 ans (org-ans0 "") org-ans1 org-ans2 final)
+	 ans (org-ans0 "") org-ans1 org-ans2 final cal-frame)
 
     (cond
      (from-string (setq ans from-string))
@@ -16746,9 +16725,13 @@ user."
       (save-excursion
 	(save-window-excursion
 	  (calendar)
+	  (when (eq calendar-setup 'calendar-only)
+	    (setq cal-frame
+		  (window-frame (get-buffer-window "*Calendar*" 'visible)))
+	    (select-frame cal-frame))
 	  (org-eval-in-calendar '(setq cursor-type nil) t)
-          (unwind-protect
-              (progn
+	  (unwind-protect
+	      (progn
 		(calendar-forward-day (- (time-to-days org-def)
 					 (calendar-absolute-from-gregorian
 					  (calendar-current-date))))
@@ -16775,8 +16758,11 @@ user."
 		    (use-local-map old-map)
 		    (when org-read-date-overlay
 		      (delete-overlay org-read-date-overlay)
-                      (setq org-read-date-overlay nil)))))
-	    (bury-buffer "*Calendar*")))))
+		      (setq org-read-date-overlay nil)))))
+	    (bury-buffer "*Calendar*")
+	    (when cal-frame
+	      (delete-frame cal-frame)
+	      (select-frame-set-input-focus cur-frame))))))
 
      (t ; Naked prompt only
       (unwind-protect
@@ -17285,14 +17271,17 @@ Allowed values for TYPE are:
 
 When TYPE is nil, fall back on returning a regexp that matches
 both scheduled and deadline timestamps."
-  (cond ((eq type 'all) "\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\(?: +[^]+0-9>\n -]+\\)?\\(?: +[0-9]\\{1,2\\}:[0-9]\\{2\\}\\)?\\)")
-	((eq type 'active) org-ts-regexp)
-	((eq type 'inactive) "\\[\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} ?[^\n>]*?\\)\\]")
-	((eq type 'scheduled) (concat "\\<" org-scheduled-string " *<\\([^>]+\\)>"))
-	((eq type 'deadline) (concat "\\<" org-deadline-string " *<\\([^>]+\\)>"))
-	((eq type 'closed) (concat org-closed-string " \\[\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} ?[^\n>]*?\\)\\]"))
-	((eq type 'scheduled-or-deadline)
-	 (concat "\\<\\(?:" org-deadline-string "\\|" org-scheduled-string "\\) *<\\([^>]+\\)>"))))
+  (case type
+    (all org-ts-regexp-both)
+    (active org-ts-regexp)
+    (inactive org-ts-regexp-inactive)
+    (scheduled org-scheduled-time-regexp)
+    (deadline org-deadline-time-regexp)
+    (closed org-closed-time-regexp)
+    (otherwise
+     (concat "\\<"
+	     (regexp-opt (list org-deadline-string org-scheduled-string))
+	     " *<\\([^>]+\\)>"))))
 
 (defun org-check-before-date (date)
   "Check if there are deadlines or scheduled entries before DATE."
@@ -17300,9 +17289,13 @@ both scheduled and deadline timestamps."
   (let ((case-fold-search nil)
 	(regexp (org-re-timestamp org-ts-type))
 	(callback
-	 (lambda () (time-less-p
-		     (org-time-string-to-time (match-string 1))
-		     (org-time-string-to-time date)))))
+	 `(lambda ()
+	    (and ,(if (memq org-ts-type '(active inactive all))
+		      '(eq (org-element-type (org-element-context) 'timestamp))
+		    '(org-at-planning-p))
+		 (time-less-p
+		  (org-time-string-to-time (match-string 1))
+		  (org-time-string-to-time date))))))
     (message "%d entries before %s"
 	     (org-occur regexp nil callback) date)))
 
@@ -17312,10 +17305,13 @@ both scheduled and deadline timestamps."
   (let ((case-fold-search nil)
 	(regexp (org-re-timestamp org-ts-type))
 	(callback
-	 (lambda () (not
-		     (time-less-p
-		      (org-time-string-to-time (match-string 1))
-		      (org-time-string-to-time date))))))
+	 `(lambda ()
+	    (and ,(if (memq org-ts-type '(active inactive all))
+		      '(eq (org-element-type (org-element-context) 'timestamp))
+		    '(org-at-planning-p))
+		 (not (time-less-p
+		       (org-time-string-to-time (match-string 1))
+		       (org-time-string-to-time date)))))))
     (message "%d entries after %s"
 	     (org-occur regexp nil callback) date)))
 
@@ -17326,15 +17322,18 @@ both scheduled and deadline timestamps."
   (let ((case-fold-search nil)
 	(regexp (org-re-timestamp org-ts-type))
 	(callback
-	 (lambda ()
-	   (let ((match (match-string 1)))
-	     (and
-	      (not (time-less-p
-		    (org-time-string-to-time match)
-		    (org-time-string-to-time start-date)))
-	      (time-less-p
-	       (org-time-string-to-time match)
-	       (org-time-string-to-time end-date)))))))
+	 `(lambda ()
+	    (let ((match (match-string 1)))
+	      (and
+	       ,(if (memq org-ts-type '(active inactive all))
+		    '(eq (org-element-type (org-element-context) 'timestamp))
+		  '(org-at-planning-p))
+	       (not (time-less-p
+		     (org-time-string-to-time match)
+		     (org-time-string-to-time start-date)))
+	       (time-less-p
+		(org-time-string-to-time match)
+		(org-time-string-to-time end-date)))))))
     (message "%d entries between %s and %s"
 	     (org-occur regexp nil callback) start-date end-date)))
 
@@ -23395,7 +23394,7 @@ strictly within a source block, use appropriate comment syntax."
     (call-interactively 'comment-dwim)))
 
 
-;;; Planning
+;;; Timestamps API
 
 ;; This section contains tools to operate on timestamp objects, as
 ;; returned by, e.g. `org-element-context'.
@@ -24718,16 +24717,14 @@ ELEMENT is the element at point."
 	     (> (point) (match-end 0))
 	     (org--flyspell-object-check-p element)))
        ;; Ignore checks in LOGBOOK (or equivalent) drawer.
-       ((and org-log-into-drawer
-	     (let ((log (or (org-string-nw-p org-log-into-drawer) "LOGBOOK"))
-		   (parent element))
-	       (while (and parent (not (eq (org-element-type parent) 'drawer)))
-		 (setq parent (org-element-property :parent parent)))
-	       (and parent
-		    (eq (compare-strings
-			 log nil nil
-			 (org-element-property :drawer-name parent) nil nil t)
-			t))))
+       ((let ((log (org-log-into-drawer)))
+	  (and log
+	       (let ((drawer (org-element-lineage element '(drawer))))
+		 (and drawer
+		      (eq (compare-strings
+			   log nil nil
+			   (org-element-property :drawer-name drawer) nil nil t)
+			  t)))))
 	nil)
        (t
 	(case (org-element-type element)
