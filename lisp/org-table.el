@@ -3017,10 +3017,13 @@ and TABLE is a vector with line types."
 			  nil))
 		    t)))
       (setq n (1- n)))
-    (if (or (< i 0) (>= i l))
-	(user-error "Row descriptor %s used in line %d leads outside table"
-	       desc cline)
-      i)))
+    (cond ((or (< i 0) (>= i l))
+	   (user-error "Row descriptor %s used in line %d leads outside table"
+		       desc cline))
+	  ;; The last hline doesn't exist.  Instead, point to last row
+	  ;; in table.
+	  ((= i (1- l)) (1- i))
+	  (t i))))
 
 (defun org-table--error-on-old-row-references (s)
   (when (string-match "&[-+0-9I]" s)
@@ -4775,7 +4778,11 @@ This may be either a string or a function of two arguments:
   example \"%s\\\\times10^{%s}\".  This may also be a property
   list with column numbers and format strings or functions.
   :fmt will still be applied after :efmt."
-  (let ((backend (plist-get params :backend)))
+  (let ((backend (plist-get params :backend))
+	;; Disable user-defined export filters and hooks.
+	(org-export-filters-alist nil)
+	(org-export-before-parsing-hook nil)
+	(org-export-before-processing-hook nil))
     (when (and backend (symbolp backend) (not (org-export-get-backend backend)))
       (user-error "Unknown :backend value"))
     (when (or (not backend) (plist-get params :raw)) (require 'ox-org))
