@@ -114,8 +114,6 @@
     (:html-link-use-abs-url nil "html-link-use-abs-url" org-html-link-use-abs-url)
     (:html-link-home "HTML_LINK_HOME" nil org-html-link-home)
     (:html-link-up "HTML_LINK_UP" nil org-html-link-up)
-    (:html-head "HTML_HEAD" nil org-html-head newline)
-    (:html-head-extra "HTML_HEAD_EXTRA" nil org-html-head-extra newline)
     (:html-container "HTML_CONTAINER" nil org-html-container-element)
     (:html-mathjax "HTML_MATHJAX" nil "" space)
     (:html-html5-fancy nil "html5-fancy" org-html-html5-fancy)
@@ -275,7 +273,8 @@ for the JavaScript code in this tag.
  <!--/*--><![CDATA[/*><!--*/
   .title  { text-align: center; }
   .todo   { font-family: monospace; color: red; }
-  .done   { color: green; }
+  .done   { font-family: monospace; color: green; }
+  .priority { font-family: monospace; color: orange; }
   .tag    { background-color: #eee; font-family: monospace;
             padding: 2px; font-size: 80%; font-weight: normal; }
   .timestamp { color: #bebebe; }
@@ -1885,6 +1884,14 @@ INFO is a plist used as a communication channel."
 	    (org-html-fix-class-name todo)
 	    todo)))
 
+;;;; Priority
+
+(defun org-html--priority (priority info)
+  "Format a priority into HTML.
+PRIORITY is the character code of the priority or nil.  INFO is
+a plist containing export options."
+  (and priority (format "<span class=\"priority\">[%c]</span>" priority)))
+
 ;;;; Tags
 
 (defun org-html--tags (tags info)
@@ -2017,31 +2024,34 @@ a plist used as a communication channel."
 
 ;;; Tables of Contents
 
-(defun org-html-toc (depth info)
+(defun org-html-toc (depth info &optional scope)
   "Build a table of contents.
-DEPTH is an integer specifying the depth of the table.  INFO is a
-plist used as a communication channel.  Return the table of
-contents as a string, or nil if it is empty."
+DEPTH is an integer specifying the depth of the table.  INFO is
+a plist used as a communication channel.  Optional argument SCOPE
+is an element defining the scope of the table.  Return the table
+of contents as a string, or nil if it is empty."
   (let ((toc-entries
 	 (mapcar (lambda (headline)
 		   (cons (org-html--format-toc-headline headline info)
 			 (org-export-get-relative-level headline info)))
-		 (org-export-collect-headlines info depth)))
-	(outer-tag (if (and (org-html-html5-p info)
-			    (plist-get info :html-html5-fancy))
-		       "nav"
-		     "div")))
+		 (org-export-collect-headlines info depth scope))))
     (when toc-entries
-      (concat (format "<%s id=\"table-of-contents\">\n" outer-tag)
-	      (let ((top-level (plist-get info :html-toplevel-hlevel)))
-		(format "<h%d>%s</h%d>\n"
-			top-level
-			(org-html--translate "Table of Contents" info)
-			top-level))
-	      "<div id=\"text-table-of-contents\">"
-	      (org-html--toc-text toc-entries)
-	      "</div>\n"
-	      (format "</%s>\n" outer-tag)))))
+      (let ((toc (concat "<div id=\"text-table-of-contents\">"
+			 (org-html--toc-text toc-entries)
+			 "</div>\n")))
+	(if scope toc
+	  (let ((outer-tag (if (and (org-html-html5-p info)
+				    (plist-get info :html-html5-fancy))
+			       "nav"
+			     "div")))
+	    (concat (format "<%s id=\"table-of-contents\">\n" outer-tag)
+		    (let ((top-level (plist-get info :html-toplevel-hlevel)))
+		      (format "<h%d>%s</h%d>\n"
+			      top-level
+			      (org-html--translate "Table of Contents" info)
+			      top-level))
+		    toc
+		    (format "</%s>\n" outer-tag))))))))
 
 (defun org-html--toc-text (toc-entries)
   "Return innards of a table of contents, as a string.
@@ -2396,8 +2406,12 @@ holding contextual information."
   "Default format function for a headline.
 See `org-html-format-headline-function' for details."
   (let ((todo (org-html--todo todo info))
+	(priority (org-html--priority priority info))
 	(tags (org-html--tags tags info)))
-    (concat todo (and todo " ") text (and tags "&#xa0;&#xa0;&#xa0;") tags)))
+    (concat todo (and todo " ")
+	    priority (and priority " ")
+	    text
+	    (and tags "&#xa0;&#xa0;&#xa0;") tags)))
 
 (defun org-html--container (headline info)
   (or (org-element-property :HTML_CONTAINER headline)
@@ -2508,7 +2522,7 @@ INFO is a plist holding contextual information.  See
 			  class (concat checkbox term))
 		  "<dd>"))))
      (unless (eq type 'descriptive) checkbox)
-     (org-trim contents)
+     (and contents (org-trim contents))
      (case type
        (ordered "</li>")
        (unordered "</li>")
@@ -2537,13 +2551,13 @@ CONTENTS is nil.  INFO is a plist holding contextual information."
     (cond
      ((string= key "HTML") value)
      ((string= key "TOC")
-      (let ((value (downcase value)))
+      (let ((case-fold-search t))
 	(cond
 	 ((string-match "\\<headlines\\>" value)
-	  (let ((depth (or (and (string-match "[0-9]+" value)
-				(string-to-number (match-string 0 value)))
-			   (plist-get info :with-toc))))
-	    (org-html-toc depth info)))
+	  (let ((depth (and (string-match "\\<[0-9]+\\>" value)
+			    (string-to-number (match-string 0 value))))
+		(localp (org-string-match-p "\\<local\\>" value)))
+	    (org-html-toc depth info (and localp keyword))))
 	 ((string= "listings" value) (org-html-list-of-listings info))
 	 ((string= "tables" value) (org-html-list-of-tables info))))))))
 
@@ -2720,8 +2734,9 @@ INFO is a plist holding contextual information.  See
 	 (path
 	  (cond
 	   ((member type '("http" "https" "ftp" "mailto"))
-	    (org-link-escape-browser
-	     (org-link-unescape (concat type ":" raw-path))))
+	    (org-html-encode-plain-text
+	     (org-link-escape-browser
+	      (org-link-unescape (concat type ":" raw-path)))))
 	   ((string= type "file")
 	    ;; Treat links to ".org" files as ".html", if needed.
 	    (setq raw-path
@@ -2967,11 +2982,8 @@ contextual information."
 (defun org-html-encode-plain-text (text)
   "Convert plain text characters from TEXT to HTML equivalent.
 Possible conversions are set in `org-html-protect-char-alist'."
-  (mapc
-   (lambda (pair)
-     (setq text (replace-regexp-in-string (car pair) (cdr pair) text t t)))
-   org-html-protect-char-alist)
-  text)
+  (dolist (pair org-html-protect-char-alist text)
+    (setq text (replace-regexp-in-string (car pair) (cdr pair) text t t))))
 
 (defun org-html-plain-text (text info)
   "Transcode a TEXT string from Org to HTML.
@@ -3064,7 +3076,7 @@ holding contextual information."
 		(or (org-element-property :CUSTOM_ID parent)
 		    section-number
 		    (org-export-get-headline-id parent info))
-		contents)))))
+		(or contents ""))))))
 
 ;;;; Radio Target
 

@@ -1665,20 +1665,9 @@ Following tree properties are set or updated:
 `:headline-numbering' Alist of all headlines as key an the
 		      associated numbering as value.
 
-`:ignore-list'     List of elements that should be ignored during
-                   export.
-
 Return updated plist."
   ;; Install the parse tree in the communication channel.
   (setq info (plist-put info :parse-tree data))
-  ;; Get the list of elements and objects to ignore, and put it into
-  ;; `:ignore-list'.  Do not overwrite any user ignore that might have
-  ;; been done during parse tree filtering.
-  (setq info
-	(plist-put info
-		   :ignore-list
-		   (append (org-export--populate-ignore-list data info)
-			   (plist-get info :ignore-list))))
   ;; Compute `:headline-offset' in order to be able to use
   ;; `org-export-get-relative-level'.
   (setq info
@@ -1763,45 +1752,8 @@ occurrence."
 	  (unless (org-export-numbered-headline-p headline options)
 	    (list headline (incf num)))))))
 
-(defun org-export--populate-ignore-list (data options)
-  "Return list of elements and objects to ignore during export.
-DATA is the parse tree to traverse.  OPTIONS is the plist holding
-export options."
-  (let* (walk-data
-	 ;; First find trees containing a select tag, if any.
-	 (selected (org-export--selected-trees data options))
-	 ;; If a select tag is active, also ignore the section before
-	 ;; the first headline, if any.
-	 (ignore (and selected
-		      (let ((first-element (car (org-element-contents data))))
-			(and (eq (org-element-type first-element) 'section)
-			     first-element))))
-	 (walk-data
-	  (lambda (data)
-	    ;; Collect ignored elements or objects into IGNORE-LIST.
-	    (let ((type (org-element-type data)))
-	      (if (org-export--skip-p data options selected) (push data ignore)
-		(if (and (eq type 'headline)
-			 (eq (plist-get options :with-archived-trees) 'headline)
-			 (org-element-property :archivedp data))
-		    ;; If headline is archived but tree below has
-		    ;; to be skipped, add it to ignore list.
-		    (dolist (element (org-element-contents data))
-		      (push element ignore))
-		  ;; Move into secondary string, if any.
-		  (let ((sec-prop
-			 (cdr (assq type org-element-secondary-value-alist))))
-		    (when sec-prop
-		      (mapc walk-data (org-element-property sec-prop data))))
-		  ;; Move into recursive objects/elements.
-		  (mapc walk-data (org-element-contents data))))))))
-    ;; Main call.
-    (funcall walk-data data)
-    ;; Return value.
-    ignore))
-
 (defun org-export--selected-trees (data info)
-  "Return list of headlines and inlinetasks with a select tag in their tree.
+  "List headlines and inlinetasks with a select tag in their tree.
 DATA is parsed data as returned by `org-element-parse-buffer'.
 INFO is a plist holding export options."
   (let* (selected-trees
@@ -1822,18 +1774,17 @@ INFO is a plist holding export options."
 			     (append
 			      genealogy
 			      (org-element-map data '(headline inlinetask)
-				'identity)
+				#'identity)
 			      selected-trees))
 		     ;; If at a headline, continue searching in tree,
 		     ;; recursively.
 		     (when (eq type 'headline)
-		       (mapc (lambda (el)
-			       (funcall walk-data el (cons data genealogy)))
-			     (org-element-contents data))))))
+		       (dolist (el (org-element-contents data))
+			 (funcall walk-data el (cons data genealogy)))))))
 		((or (eq type 'org-data)
 		     (memq type org-element-greater-elements))
-		 (mapc (lambda (el) (funcall walk-data el genealogy))
-		       (org-element-contents data)))))))))
+		 (dolist (el (org-element-contents data))
+		   (funcall walk-data el genealogy)))))))))
     (funcall walk-data data nil)
     selected-trees))
 
@@ -1898,7 +1849,7 @@ a tree with a select tag."
     (table-cell
      (and (org-export-table-has-special-column-p
 	   (org-export-get-parent-table blob))
-	  (not (org-export-get-previous-element blob options))))
+	  (org-export-first-sibling-p blob options)))
     (table-row (org-export-table-row-is-special-p blob options))
     (timestamp
      ;; `:with-timestamps' only applies to isolated timestamps
@@ -1913,7 +1864,7 @@ a tree with a select tag."
 			   (or (not (stringp obj)) (org-string-nw-p obj)))
 			 options t))))
        (case (plist-get options :with-timestamps)
-	 ('nil t)
+	 ((nil) t)
 	 (active
 	  (not (memq (org-element-property :type blob) '(active active-range))))
 	 (inactive
@@ -1933,12 +1884,6 @@ a tree with a select tag."
 ;; It is possible to modify locally the back-end used by
 ;; `org-export-data' or even use a temporary back-end by using
 ;; `org-export-data-with-backend'.
-;;
-;; Internally, three functions handle the filtering of objects and
-;; elements during the export.  In particular,
-;; `org-export-ignore-element' marks an element or object so future
-;; parse tree traversals skip it and `org-export-expand' transforms
-;; the others back into their original shape.
 ;;
 ;; `org-export-transcoder' is an accessor returning appropriate
 ;; translator function for a given element or object.
@@ -2069,12 +2014,59 @@ recursively convert DATA using BACKEND translation table."
 	  ;; will probably be used on small trees.
 	  :exported-data (make-hash-table :test 'eq :size 401)))))
 
+(defun org-export-prune-tree (data info)
+  "Prune non exportable elements from DATA.
+DATA is the parse tree to traverse.  INFO is the plist holding
+export info.  Also set `:ignore-list' in INFO to a list of
+objects which should be ignored during export, but not removed
+from tree."
+  (let* (walk-data
+	 ignore
+	 ;; First find trees containing a select tag, if any.
+	 (selected (org-export--selected-trees data info))
+	 (walk-data
+	  (lambda (data)
+	    ;; Prune non-exportable elements and objects from tree.
+	    ;; As a special case, special rows and cells from tables
+	    ;; are stored in IGNORE, as they still need to be accessed
+	    ;; during export.
+	    (let ((type (org-element-type data)))
+	      (if (org-export--skip-p data info selected)
+		  (if (memq type '(table-cell table-row)) (push data ignore)
+		    (org-element-extract-element data))
+		(if (and (eq type 'headline)
+			 (eq (plist-get info :with-archived-trees) 'headline)
+			 (org-element-property :archivedp data))
+		    ;; If headline is archived but tree below has to
+		    ;; be skipped, remove contents.
+		    (mapc #'org-element-extract-element
+			  (org-element-contents data))
+		  ;; Move into secondary string, if any.
+		  (let ((sec-prop
+			 (cdr (assq type org-element-secondary-value-alist))))
+		    (when sec-prop
+		      (mapc walk-data (org-element-property sec-prop data))))
+		  ;; Move into recursive objects/elements.
+		  (mapc walk-data (org-element-contents data))))))))
+    ;; If a select tag is active, also ignore the section before the
+    ;; first headline, if any.
+    (when selected
+      (let ((first-element (car (org-element-contents data))))
+	(when (eq (org-element-type first-element) 'section)
+	  (org-element-extract-element first-element))))
+    ;; Prune tree and communication channel.
+    (funcall walk-data data)
+    (dolist (prop '(:author :date :title))
+      (funcall walk-data (plist-get info prop)))
+    ;; Eventually set `:ignore-list'.
+    (plist-put info :ignore-list ignore)))
+
 (defun org-export-remove-uninterpreted-data (data info)
   "Change uninterpreted elements back into Org syntax.
 DATA is the parse tree.  INFO is a plist containing export
 options.  Each uninterpreted element or object is changed back
 into a string.  Contents, if any, are not modified.  The parse
-tree is modified by side effect and returned by the function."
+tree is modified by side effect."
   (org-export--remove-uninterpreted-data-1 data info)
   (dolist (prop '(:author :date :title))
     (plist-put info
@@ -2163,13 +2155,6 @@ keywords before output."
 		 (org-element--interpret-affiliated-keywords blob))
 	    (funcall (intern (format "org-element-%s-interpreter" type))
 		     blob contents))))
-
-(defun org-export-ignore-element (element info)
-  "Add ELEMENT to `:ignore-list' in INFO.
-
-Any element in `:ignore-list' will be skipped when using
-`org-element-map'.  INFO is modified by side effects."
-  (plist-put info :ignore-list (cons element (plist-get info :ignore-list))))
 
 
 
@@ -2792,7 +2777,7 @@ The function assumes BUFFER's major mode is `org-mode'."
 
 ;;;###autoload
 (defun org-export-as
-  (backend &optional subtreep visible-only body-only ext-plist)
+    (backend &optional subtreep visible-only body-only ext-plist)
   "Transcode current Org buffer into BACKEND code.
 
 BACKEND is either an export back-end, as returned by, e.g.,
@@ -2872,6 +2857,13 @@ Return code as a string."
 	       (org-export-install-filters
 		(org-combine-plists
 		 info (org-export-get-environment backend subtreep ext-plist))))
+	 ;; Call options filters and update export options.  We do not
+	 ;; use `org-export-filter-apply-functions' here since the
+	 ;; arity of such filters is different.
+	 (let ((backend-name (org-export-backend-name backend)))
+	   (dolist (filter (plist-get info :filter-options))
+	     (let ((result (funcall filter info backend-name)))
+	       (when result (setq info result)))))
 	 ;; Expand export-specific set of macros: {{{author}}},
 	 ;; {{{date}}}, {{{email}}} and {{{title}}}.  It must be done
 	 ;; once regular macros have been expanded, since document
@@ -2884,20 +2876,16 @@ Return code as a string."
 		;; EMAIL is not a parsed keyword: store it as-is.
 		(cons "email" (or (plist-get info :email) ""))
 		(cons "title"
-		      (org-element-interpret-data (plist-get info :title))))
+		      (org-element-interpret-data (plist-get info :title)))
+		(cons "results" "$1"))
 	  'finalize)
 	 ;; Parse buffer.
 	 (setq tree (org-element-parse-buffer nil visible-only))
-	 ;; Handle left-over uninterpreted elements or objects in
-	 ;; parse tree and communication channel.
+	 ;; Prune tree from non-exported elements and transform
+	 ;; uninterpreted elements or objects in both parse tree and
+	 ;; communication channel.
+	 (org-export-prune-tree tree info)
 	 (org-export-remove-uninterpreted-data tree info)
-	 ;; Call options filters and update export options.  We do not
-	 ;; use `org-export-filter-apply-functions' here since the
-	 ;; arity of such filters is different.
-	 (let ((backend-name (org-export-backend-name backend)))
-	   (dolist (filter (plist-get info :filter-options))
-	     (let ((result (funcall filter info backend-name)))
-	       (when result (setq info result)))))
 	 ;; Parse buffer, handle uninterpreted elements or objects,
 	 ;; then call parse-tree filters.
 	 (setq tree
@@ -3816,8 +3804,10 @@ fail, the fall-back value is \"???\"."
   "Return alternative title for HEADLINE, as a secondary string.
 INFO is a plist used as a communication channel.  If no optional
 title is defined, fall-back to the regular title."
-  (or (org-element-property :alt-title headline)
-      (org-element-property :title headline)))
+  (let ((alt (org-element-property :ALT_TITLE headline)))
+    (if alt (org-element-parse-secondary-string
+	     alt (org-element-restriction 'headline) headline)
+      (org-element-property :title headline))))
 
 (defun org-export-first-sibling-p (blob info)
   "Non-nil when BLOB is the first sibling in its parent.
@@ -4828,7 +4818,7 @@ return nil."
 ;; `org-export-collect-tables', `org-export-collect-figures' and
 ;; `org-export-collect-listings' can be derived from it.
 
-(defun org-export-collect-headlines (info &optional n)
+(defun org-export-collect-headlines (info &optional n scope)
   "Collect headlines in order to build a table of contents.
 
 INFO is a plist used as a communication channel.
@@ -4838,15 +4828,28 @@ the table of contents.  Otherwise, it is set to the value of the
 last headline level.  See `org-export-headline-levels' for more
 information.
 
+Optional argument SCOPE, when non-nil, is an element.  If it is
+a headline, only children of SCOPE are collected.  Otherwise,
+collect children of the headline containing provided element.  If
+there is no such headline, collect all headlines.  In any case,
+argument N becomes relative to the level of that headline.
+
 Return a list of all exportable headlines as parsed elements.
-Footnote sections, if any, will be ignored."
-  (let ((limit (plist-get info :headline-levels)))
-    (setq n (if (wholenump n) (min n limit) limit))
-    (org-element-map (plist-get info :parse-tree) 'headline
-      #'(lambda (headline)
-	  (unless (org-element-property :footnote-section-p headline)
-	    (let ((level (org-export-get-relative-level headline info)))
-	      (and (<= level n) headline))))
+Footnote sections are ignored."
+  (let* ((scope (cond ((not scope) (plist-get info :parse-tree))
+		      ((eq (org-element-type scope) 'headline) scope)
+		      ((org-export-get-parent-headline scope))
+		      (t (plist-get info :parse-tree))))
+	 (limit (plist-get info :headline-levels))
+	 (n (if (not (wholenump n)) limit
+	      (min (if (eq (org-element-type scope) 'org-data) n
+		     (+ (org-export-get-relative-level scope info) n))
+		   limit))))
+    (org-element-map (org-element-contents scope) 'headline
+      (lambda (headline)
+	(unless (org-element-property :footnote-section-p headline)
+	  (let ((level (org-export-get-relative-level headline info)))
+	    (and (<= level n) headline))))
       info)))
 
 (defun org-export-collect-elements (type info &optional predicate)
@@ -5510,11 +5513,11 @@ them."
      ("zh-CN" :html "&#26410;&#30693;&#24341;&#29992;" :utf-8 "未知引用")))
   "Dictionary for export engine.
 
-Alist whose CAR is the string to translate and CDR is an alist
-whose CAR is the language string and CDR is a plist whose
+Alist whose car is the string to translate and cdr is an alist
+whose car is the language string and cdr is a plist whose
 properties are possible charsets and values translated terms.
 
-It is used as a database for `org-export-translate'. Since this
+It is used as a database for `org-export-translate'.  Since this
 function returns the string as-is if no translation was found,
 the variable only needs to record values different from the
 entry.")
@@ -5525,9 +5528,9 @@ entry.")
 ENCODING is a symbol among `:ascii', `:html', `:latex', `:latin1'
 and `:utf-8'.  INFO is a plist used as a communication channel.
 
-Translation depends on `:language' property. Return the
-translated string. If no translation is found, try to fall back
-to `:default' encoding. If it fails, return S."
+Translation depends on `:language' property.  Return the
+translated string.  If no translation is found, try to fall back
+to `:default' encoding.  If it fails, return S."
   (let* ((lang (plist-get info :language))
 	 (translations (cdr (assoc lang
 				   (cdr (assoc s org-export-dictionary))))))

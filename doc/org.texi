@@ -831,7 +831,7 @@ reproducible research compendium.
 Org keeps simple things simple.  When first fired up, it should feel like a
 straightforward, easy to use outliner.  Complexity is not imposed, but a
 large amount of functionality is available when needed.  Org is a toolbox.
-Many users usilize only a (very personal) fraction of Org's capabilities, and
+Many users actually run only a (very personal) fraction of Org's capabilities, and
 know that there is more whenever they need it.
 
 All of this is achieved with strictly plain text files, the most portable and
@@ -5368,7 +5368,6 @@ should not be used as keys in the properties drawer:
 @example
 ALLTAGS      @r{All tags, including inherited ones.}
 BLOCKED      @r{"t" if task is currently blocked by children or siblings.}
-NOBLOCKING   @r{"t" if blocking is disabled for this task.}
 CATEGORY     @r{The category of an entry.}
 CLOCKSUM     @r{The sum of CLOCK intervals in the subtree.  @code{org-clock-sum}}
              @r{must be run first to compute the values in the current buffer.}
@@ -6837,7 +6836,7 @@ countdown timer.  With a prefix argument, first reset the relative timer to
 @orgcmd{M-@key{RET},org-insert-heading}
 Once the timer list is started, you can also use @kbd{M-@key{RET}} to insert
 new timer items.
-@orgcmd{C-c C-x \,,org-timer-pause-or-continue}
+@orgcmd{C-c C-x \\,org-timer-pause-or-continue}
 Pause the timer, or continue it if it is already paused.
 @orgcmd{C-c C-x _,org-timer-stop}
 Stop the timer.  After this, you can only start a new timer, not continue the
@@ -8591,9 +8590,9 @@ Remove all filters in the current agenda view.
 @vindex org-agenda-max-tags
 
 Here is a list of options that you can set, either globally, or locally in
-your custom agenda views@pxref{Custom agenda views}.
+your custom agenda views (@pxref{Custom agenda views}).
 
-@table @var
+@table @code
 @item org-agenda-max-entries
 Limit the number of entries.
 @item org-agenda-max-effort
@@ -9685,8 +9684,8 @@ of contents entirely, by configuring the variable @code{org-export-with-toc},
 or on a per-file basis with a line like
 
 @example
-#+OPTIONS: toc:2          (only to two levels in TOC)
-#+OPTIONS: toc:nil        (no default TOC at all)
+#+OPTIONS: toc:2          @r{only inlcude two levels in TOC}
+#+OPTIONS: toc:nil        @r{no default TOC at all}
 @end example
 
 If you would like to move the table of contents to a different location, you
@@ -9695,18 +9694,29 @@ should turn off the default table using @code{org-export-with-toc} or
 location(s).
 
 @example
-#+OPTIONS: toc:nil        (no default TOC)
+#+OPTIONS: toc:nil        @r{no default TOC}
 ...
-#+TOC: headlines 2        (insert TOC here, with two headline levels)
+#+TOC: headlines 2        @r{insert TOC here, with two headline levels}
 @end example
 
-Multiple @code{#+TOC: headline} lines are allowed.  The same @code{TOC}
-keyword can also generate a list of all tables (resp.@: all listings) with a
-caption in the buffer.
+Moreover, if you append @samp{local} parameter, the table contains only
+entries for the children of the current section@footnote{For @LaTeX{} export,
+this feature requires the @code{titletoc} package.  Note that @code{titletoc}
+must be loaded @emph{before} @code{hyperref}.  Thus, you may have to
+customize @code{org-latex-default-packages-alist}.}.  In this case, any depth
+parameter becomes relative to the current level.
 
 @example
-#+TOC: listings           (build a list of listings)
-#+TOC: tables             (build a list of tables)
+* Section
+#+TOC: headlines 1 local  @r{insert local TOC, with direct children only}
+@end example
+
+The same @code{TOC} keyword can also generate a list of all tables (resp.@:
+all listings) with a caption in the document.
+
+@example
+#+TOC: listings           @r{build a list of listings}
+#+TOC: tables             @r{build a list of tables}
 @end example
 
 @cindex property, ALT_TITLE
@@ -10738,9 +10748,12 @@ Toggle inclusion of inlinetasks (@code{org-export-with-inlinetasks}).
 
 @item num:
 @vindex org-export-with-section-numbers
+@cindex property, UNNUMBERED
 Toggle section-numbers (@code{org-export-with-section-numbers}).  It can also
 be set to a number @samp{n}, so only headlines at that level or above will be
-numbered.
+numbered.  Finally, irrespective of the level of a specific headline, the
+numbering of it can be disabled by setting the @code{UNNUMBERED} property to
+non-nil.  This also affects subheadings.
 
 @item p:
 @vindex org-export-with-planning
@@ -10815,7 +10828,7 @@ settings that cannot be changed using specific keywords.
 @cindex property, EXPORT_FILE_NAME
 The name of the output file to be generated is taken from the file associated
 to the buffer, when possible, or asked to you otherwise.  For subtree export,
-you can also set @samp{EXPORT_FILE_NAME} property.  In all cases, only the
+you can also set @code{EXPORT_FILE_NAME} property.  In all cases, only the
 base name of the file is retained, and a back-end specific extension is
 added.
 
@@ -12840,7 +12853,7 @@ export the table that follows:
 @end lisp
 
 @example
-#+ATTR_ODT: :style "TableWithHeaderRowAndColumn"
+#+ATTR_ODT: :style TableWithHeaderRowAndColumn
 | Name  | Phone | Age |
 | Peter |  1234 |  17 |
 | Anna  |  4321 |  25 |
@@ -15559,14 +15572,24 @@ execution.
 @subsubsection @code{:session}
 @cindex @code{:session}, src header argument
 
-The @code{:session} header argument starts a session for an interpreted
-language where state is preserved.
-
+The @code{:session} header argument starts a (possibly named) session for an
+interpreted language where the interpreter’s state is preserved.  All code
+blocks sharing the same name are exectuted by the same interpreter process.
 By default, a session is not started.
 
-A string passed to the @code{:session} header argument will give the session
-a name.  This makes it possible to run concurrent sessions for each
-interpreted language.
+@itemize @bullet
+@item @code{none}
+The default.  Each block is evaluated in its own interpreter process, which
+is terminated after the evaluation.
+@item @code{other}
+Any other string passed to the @code{:session} header argument will give the
+session a name.  For example, @code{:session mysession}.  If @code{:session}
+is given but no name string is specified, the session is named according to
+the language used in the block.  All blocks with the same session name share
+the same session.  Using different session names enables concurrent sessions
+(even for the same interpreted language).
+
+@end itemize
 
 @node noweb
 @subsubsection @code{:noweb}
