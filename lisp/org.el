@@ -7707,7 +7707,7 @@ When NEXT is non-nil, check the next line instead."
 	 (save-match-data
 	   (looking-at "[ \t]*$")))))
 
-(defun org-insert-heading (&optional arg invisible-ok)
+(defun org-insert-heading (&optional arg invisible-ok top-level)
   "Insert a new heading or an item with the same depth at point.
 
 If point is at the beginning of a heading or a list item, insert
@@ -7741,10 +7741,13 @@ into a heading.
 
 When INVISIBLE-OK is set, stop at invisible headlines when going
 back.  This is important for non-interactive uses of the
-command."
+command.
+
+When optional argument TOP-LEVEL is non-nil, insert a level 1
+heading, unconditionally."
   (interactive "P")
   (if (org-called-interactively-p 'any) (org-reveal))
-  (let ((itemp (org-in-item-p))
+  (let ((itemp (and (not top-level) (org-in-item-p)))
 	(may-split (org-get-alist-option org-M-RET-may-split-line 'headline))
 	(respect-content (or org-insert-heading-respect-content
 			     (equal arg '(4))))
@@ -7788,7 +7791,7 @@ command."
 				 (org-previous-line-empty-p)
 			       ;; We will decide later
 			       nil))
-	       ;; Get a level string to fall back on
+	       ;; Get a level string to fall back on.
 	       (fix-level
 		(if (org-before-first-heading-p) "*"
 		  (save-excursion
@@ -7799,14 +7802,15 @@ command."
 	       (stars
 		(save-excursion
 		  (condition-case nil
-		      (progn
+		      (if top-level "* "
 			(org-back-to-heading invisible-ok)
 			(when (and (not on-heading)
 				   (featurep 'org-inlinetask)
 				   (integerp org-inlinetask-min-level)
 				   (>= (length (match-string 0))
 				       org-inlinetask-min-level))
-			  ;; Find a heading level before the inline task
+			  ;; Find a heading level before the inline
+			  ;; task.
 			  (while (and (setq level (org-up-heading-safe))
 				      (>= level org-inlinetask-min-level)))
 			  (if (org-at-heading-p)
@@ -7826,14 +7830,15 @@ command."
 	       (blank (if (eq blank-a 'auto) empty-line-p blank-a))
 	       pos hide-previous previous-pos)
 
-	  ;; If we insert after content, move there and clean up whitespace
+	  ;; If we insert after content, move there and clean up
+	  ;; whitespace.
 	  (when (and respect-content
 		     (not (org-looking-at-p org-outline-regexp-bol)))
 	    (if (not (org-before-first-heading-p))
 		(org-end-of-subtree nil t)
 	      (re-search-forward org-outline-regexp-bol)
 	      (beginning-of-line 0))
-	    (skip-chars-backward " \r\n")
+	    (skip-chars-backward " \r\t\n")
 	    (and (not (looking-back "^\\*+"))
 		 (looking-at "[ \t]+") (replace-match ""))
 	    (unless (eobp) (forward-char 1))
@@ -7841,12 +7846,14 @@ command."
 	      (unless (bobp) (backward-char 1))
 	      (insert "\n")))
 
-	  ;; If we are splitting, grab the text that should be moved to the new headline
+	  ;; If we are splitting, grab the text that should be moved
+	  ;; to the new headline.
 	  (when may-split
 	    (if (org-on-heading-p)
-		;; This is a heading, we split intelligently (keeping tags)
+		;; This is a heading: split intelligently (keeping
+		;; tags).
 		(let ((pos (point)))
-		  (goto-char (point-at-bol))
+		  (beginning-of-line)
 		  (unless (looking-at org-complex-heading-regexp)
 		    (error "This should not happen"))
 		  (when (and (match-beginning 4)
@@ -7857,31 +7864,29 @@ command."
 		    (delete-region (point) (match-end 4))
 		    (if (looking-at "[ \t]*$")
 			(replace-match "")
-		      (insert (make-string (length initial-content) ?\ )))
+		      (insert (make-string (length initial-content) ?\s)))
 		    (setq initial-content (org-trim initial-content)))
 		  (goto-char pos))
-	      ;; a normal line
+	      ;; A normal line.
 	      (setq initial-content
-		    (org-trim (buffer-substring (point) (point-at-eol))))
-	      (delete-region (point) (point-at-eol))))
+		    (org-trim
+		     (delete-and-extract-region (point) (line-end-position))))))
 
-	  ;; If we are at the beginning of the line, insert before it.  Else after
+	  ;; If we are at the beginning of the line, insert before it.
+	  ;; Otherwise, after it.
 	  (cond
 	   ((and (bolp) (looking-at "[ \t]*$")))
-	   ((and (bolp) (not (looking-at "[ \t]*$")))
-	    (open-line 1))
-	   (t
-	    (goto-char (point-at-eol))
-	    (insert "\n")))
+	   ((bolp) (open-line 1))
+	   (t (end-of-line)
+	      (insert "\n")))
 
 	  ;; Insert the new heading
 	  (insert stars)
 	  (just-one-space)
 	  (insert initial-content)
-	  (when adjust-empty-lines
-	    (if (or (not blank)
-		    (and blank (not (org-previous-line-empty-p))))
-		(org-N-empty-lines-before-current (if blank 1 0))))
+	  (when (and adjust-empty-lines
+		     (not (and blank (org-previous-line-empty-p))))
+	    (org-N-empty-lines-before-current (if blank 1 0)))
 	  (run-hooks 'org-insert-heading-hook)))))))
 
 (defun org-N-empty-lines-before-current (N)
@@ -11007,8 +11012,7 @@ visibility around point, thus ignoring
 						    org-emphasis-alist)
 					    "\\|") "\\)"))
 	(pos (point))
-	(pre nil) (post nil)
-	words re0 re1 re2 re3 re4_ re4 re5 re2a re2a_ reall)
+	words re0 re2 re4_ re4 re5 re2a re2a_ reall)
     (cond
      ;; First check if there are any special search functions
      ((run-hook-with-args-until-success 'org-execute-file-search-functions s))
@@ -11062,14 +11066,34 @@ visibility around point, thus ignoring
        ((derived-mode-p 'org-mode)
 	(org-occur (match-string 1 s)))
        (t (org-do-occur (match-string 1 s)))))
-     ((and (derived-mode-p 'org-mode) org-link-search-must-match-exact-headline)
-      (and (equal (string-to-char s) ?*) (setq s (substring s 1)))
+     ((and (derived-mode-p 'org-mode)
+	   (or (and (equal (string-to-char s) ?*) (setq s (substring s 1)))
+	       org-link-search-must-match-exact-headline))
+      ;; Headline search.
       (goto-char (point-min))
       (cond
        ((let (case-fold-search)
-	  (re-search-forward (format org-complex-heading-regexp-format
-				     (regexp-quote s))
-			     nil t))
+	  (re-search-forward
+	   (let* ((wspace "[ \t]")
+		  (wspaceopt (concat wspace "*"))
+		  (cookie (concat "\\(?:"
+				  wspaceopt
+				  "\\[[0-9]*\\(?:%\\|/[0-9]*\\)\\]"
+				  wspaceopt
+				  "\\)"))
+		  (sep (concat "\\(?:" wspace "+\\|" cookie "+\\)")))
+	     (concat
+	      org-outline-regexp-bol
+	      "\\(?:" org-todo-regexp "[ \t]+\\)?"
+	      "\\(?:\\[#.\\][ \t]+\\)?"
+	      sep "*"
+	      (mapconcat #'identity
+			 (org-split-string (regexp-quote s))
+			 (concat sep "+"))
+	      sep "*"
+	      (org-re "\\(?:[ \t]+:[[:alnum:]_@#%%:]+:\\)?")
+	      "[ \t]*$"))
+	   nil t))
 	;; OK, found a match
 	(setq type 'dedicated)
 	(goto-char (match-beginning 0)))
@@ -11077,19 +11101,15 @@ visibility around point, thus ignoring
 	     (eq org-link-search-must-match-exact-headline 'query-to-create)
 	     (y-or-n-p "No match - create this as a new heading? "))
 	(goto-char (point-max))
-	(or (bolp) (newline))
-	(insert "* " s "\n")
+	(unless (bolp) (newline))
+	(org-insert-heading nil t t)
+	(insert s "\n")
 	(beginning-of-line 0))
        (t
 	(goto-char pos)
 	(error "No match"))))
      (t
       ;; A normal search string
-      (when (equal (string-to-char s) ?*)
-	;; Anchor on headlines, post may include tags.
-	(setq pre "^\\*+[ \t]+\\(?:\\sw+\\)?[ \t]*"
-	      post (org-re "[ \t]*\\(?:[ \t]+:[[:alnum:]_@#%:+]:[ \t]*\\)?$")
-	      s (substring s 1)))
       (remove-text-properties
        0 (length s)
        '(face nil mouse-face nil keymap nil fontified nil) s)
@@ -11106,15 +11126,9 @@ visibility around point, thus ignoring
 					  "[^a-zA-Z_\r\n]+") "\\)[^a-zA-Z_]")
 	    re4 (concat "[^a-zA-Z_]" re4_)
 
-	    re1 (concat pre re2 post)
-	    re3 (concat pre (if pre re4_ re4) post)
-	    re5 (concat pre ".*" re4)
-	    re2 (concat pre re2)
-	    re2a (concat pre (if pre re2a_ re2a))
-	    re4 (concat pre (if pre re4_ re4))
-	    reall (concat "\\(" re0 "\\)\\|\\(" re1 "\\)\\|\\(" re2
-			  "\\)\\|\\(" re3 "\\)\\|\\(" re4 "\\)\\|\\("
-			  re5 "\\)"))
+	    re5 (concat ".*" re4)
+	    reall (concat "\\(" re0 "\\)\\|\\(" re2 "\\)\\|\\(" re4
+			  "\\)\\|\\(" re5 "\\)"))
       (cond
        ((eq type 'org-occur) (org-occur reall))
        ((eq type 'occur) (org-do-occur (downcase reall) 'cleanup))
@@ -11122,10 +11136,8 @@ visibility around point, thus ignoring
 	  (setq type 'fuzzy)
 	  (if (or (and (org-search-not-self 1 re0 nil t)
 		       (setq type 'dedicated))
-		  (org-search-not-self 1 re1 nil t)
 		  (org-search-not-self 1 re2 nil t)
 		  (org-search-not-self 1 re2a nil t)
-		  (org-search-not-self 1 re3 nil t)
 		  (org-search-not-self 1 re4 nil t)
 		  (org-search-not-self 1 re5 nil t))
 	      (goto-char (match-beginning 1))
@@ -14177,7 +14189,8 @@ headlines matching this string."
          lspos tags tags-list
 	 (tags-alist (list (cons 0 org-file-tags)))
 	 (llast 0) rtn rtn1 level category i txt
-	 todo marker entry priority)
+	 todo marker entry priority
+	 ts-date ts-date-type ts-date-pair)
     (when (not (or (member action '(agenda sparse-tree)) (functionp action)))
       (setq action (list 'lambda nil action)))
     (save-excursion
@@ -14194,6 +14207,10 @@ headlines matching this string."
 	  (goto-char (setq lspos (match-beginning 0)))
 	  (setq level (org-reduced-level (org-outline-level))
 		category (org-get-category))
+          (when (eq action 'agenda)
+            (setq ts-date-pair (org-agenda-entry-get-agenda-timestamp (point))
+		  ts-date (car ts-date-pair)
+		  ts-date-type (cdr ts-date-pair)))
 	  (setq i llast llast level)
 	  ;; remove tag lists from same and sublevels
 	  (while (>= i level)
@@ -14265,7 +14282,9 @@ headlines matching this string."
 	      (org-add-props txt props
 		'org-marker marker 'org-hd-marker marker 'org-category category
 		'todo-state todo
-		'priority priority 'type "tagsmatch")
+                'ts-date ts-date
+		'priority priority
+                'type (concat "tagsmatch" ts-date-type))
 	      (push txt rtn))
 	     ((functionp action)
 	      (setq org-map-continue-from nil)

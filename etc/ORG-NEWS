@@ -198,6 +198,9 @@ countdown timers.
 *** New option ~only-window~ for ~org-agenda-window-setup~
 When ~org-agenda-window-setup~ is set to ~only-window~, the agenda is
 displayed as the sole window of the current frame.
+*** ~{{{date}}}~ macro supports optional formatting argument
+It is now possible to supply and optional formatting argument to
+~{{{date}}}~. See manual for details.
 ** Miscellaneous
 *** Strip all meta data from ITEM special property
 ITEM special property does not contain TODO, priority or tags anymore.
@@ -218,6 +221,11 @@ The build system has been enhanced to allow test selection with a
 regular expression by defining =BTEST_RE= during the test invocation.
 This is especially useful during bisection to find just when a
 particular test failure was introduced.
+*** Exact heading search for external links ignore spaces and cookies
+Exact heading search for links now ignore spaces and cookies. This is
+the case for links of the form ~file:projects.org::*task title~, as
+well as links of the form ~file:projects.org::some words~
+when ~org-link-search-must-match-exact-headline~ is not nil.
 * Version 8.2
 
 ** Incompatible changes

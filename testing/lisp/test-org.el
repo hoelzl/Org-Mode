@@ -900,8 +900,6 @@
 
 (ert-deftest test-org/insert-heading ()
   "Test `org-insert-heading' specifications."
-  ;; FIXME: Test coverage is incomplete yet.
-  ;;
   ;; In an empty buffer, insert a new headline.
   (should
    (equal "* "
@@ -957,6 +955,18 @@
 	  (org-test-with-temp-text "* H1\n** H3\n- item<point>\n** H2"
 	    (let ((org-insert-heading-respect-content nil))
 	      (org-insert-heading '(16)))
+	    (buffer-string))))
+  ;; When optional TOP-LEVEL argument is non-nil, always insert
+  ;; a level 1 heading.
+  (should
+   (equal "* H1\n** H2\n* "
+	  (org-test-with-temp-text "* H1\n** H2<point>"
+	    (org-insert-heading nil nil t)
+	    (buffer-string))))
+  (should
+   (equal "* H1\n- item\n* "
+	  (org-test-with-temp-text "* H1\n- item<point>"
+	    (org-insert-heading nil nil t)
 	    (buffer-string))))
   ;; Corner case: correctly insert a headline after an empty one.
   (should
@@ -1331,6 +1341,32 @@
      (goto-line 3)
      (org-open-at-point)
      (looking-at "\\* Test")))
+  ;; With a leading star in link, enforce exact heading match, even
+  ;; with `org-link-search-must-match-exact-headline' set to nil.
+  (should-error
+   (org-test-with-temp-text "* Test 1\nFoo Bar\n<point>[[*Test]]"
+     (let ((org-link-search-must-match-exact-headline nil))
+       (org-open-at-point))))
+  ;; Heading match should not care about spaces, cookies, todo
+  ;; keywords, priorities, and tags.
+  (should
+   (let ((first-line
+	  "** TODO [#A] [/]  Test [1/2] [33%] 1 \t  2 [%] :work:urgent: "))
+     (org-test-with-temp-text
+	 (concat first-line "\nFoo Bar\n<point>[[*Test 1 2]]")
+       (let ((org-link-search-must-match-exact-headline nil)
+	     (org-todo-regexp "TODO"))
+	 (org-open-at-point))
+       (looking-at (regexp-quote first-line)))))
+  ;; Heading match should still be exact.
+  (should-error
+   (let ((first-line
+	  "** TODO [#A] [/]  Test [1/2] [33%] 1 \t  2 [%] :work:urgent: "))
+     (org-test-with-temp-text
+	 (concat first-line "\nFoo Bar\n<point>[[*Test 1]]")
+       (let ((org-link-search-must-match-exact-headline nil)
+	     (org-todo-regexp "TODO"))
+	 (org-open-at-point)))))
   ;; Correctly un-hexify fuzzy links.
   (should
    (org-test-with-temp-text "* With space\n[[*With%20space][With space]]"
