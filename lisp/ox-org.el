@@ -1,6 +1,6 @@
 ;;; ox-org.el --- Org Back-End for Org Export Engine
 
-;; Copyright (C) 2013-2014 Free Software Foundation, Inc.
+;; Copyright (C) 2013-2015 Free Software Foundation, Inc.
 
 ;; Author: Nicolas Goaziou <n.goaziou@gmail.com>
 ;; Keywords: org, wp
@@ -164,7 +164,8 @@ as a communication channel."
 			(concat "#+OPTIONS: "
 				(org-element-property :value k)))))
 	       "\n"))
-   (format "#+TITLE: %s\n" (org-export-data (plist-get info :title) info))
+   (and (plist-get info :with-title)
+	(format "#+TITLE: %s\n" (org-export-data (plist-get info :title) info)))
    (and (plist-get info :with-date)
 	(let ((date (org-export-data (org-export-get-date info) info)))
 	  (and (org-string-nw-p date)

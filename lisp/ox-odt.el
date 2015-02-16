@@ -1,6 +1,6 @@
 ;;; ox-odt.el --- OpenDocument Text Exporter for Org Mode
 
-;; Copyright (C) 2010-2014 Free Software Foundation, Inc.
+;; Copyright (C) 2010-2015 Free Software Foundation, Inc.
 
 ;; Author: Jambunathan K <kjambunathan at gmail dot com>
 ;; Keywords: outlines, hypermedia, calendar, wp
@@ -1508,7 +1508,8 @@ original parsed data.  INFO is a plist holding export options."
 
       ;; Preamble - Title, Author, Date etc.
       (insert
-       (let* ((title (org-export-data (plist-get info :title) info))
+       (let* ((title (and (plist-get info :with-title)
+			  (org-export-data (plist-get info :title) info)))
 	      (author (and (plist-get info :with-author)
 			   (let ((auth (plist-get info :author)))
 			     (and auth (org-export-data auth info)))))
@@ -1739,9 +1740,9 @@ CONTENTS is nil.  INFO is a plist holding contextual information."
 	    (format "<text:span text:style-name=\"%s\">%s</text:span>"
 		    "OrgSuperscript" ",")))
      ;; Transcode footnote reference.
-     (let ((n (org-export-get-footnote-number footnote-reference info)))
+     (let ((n (org-export-get-footnote-number footnote-reference info t)))
        (cond
-	((not (org-export-footnote-first-reference-p footnote-reference info))
+	((not (org-export-footnote-first-reference-p footnote-reference info t))
 	 (funcall --format-footnote-reference n))
 	;; Inline definitions are secondary strings.
 	;; Non-inline footnotes definitions are full Org data.
@@ -2632,11 +2633,12 @@ Return nil, otherwise."
 			 (t nil))))))))
 
 (defun org-odt-link--infer-description (destination info)
-  ;; DESTINATION is a HEADLINE, a "<<target>>" or an element (like
-  ;; paragraph, verse-block etc) to which a "#+NAME: label" can be
-  ;; attached.  Note that labels that are attached to captioned
-  ;; entities - inline images, math formulae and tables - get resolved
-  ;; as part of `org-odt-format-label' and `org-odt--enumerate'.
+  ;; DESTINATION is a headline or an element (like paragraph,
+  ;; verse-block etc) to which a "#+NAME: label" can be attached.
+
+  ;; Note that labels that are attached to captioned entities - inline
+  ;; images, math formulae and tables - get resolved as part of
+  ;; `org-odt-format-label' and `org-odt--enumerate'.
 
   ;; Create a cross-reference to DESTINATION but make best-efforts to
   ;; create a *meaningful* description.  Check item numbers, section
@@ -2792,11 +2794,10 @@ INFO is a plist holding contextual information.  See
 	  (target
 	   ;; If there's a description, create a hyperlink.
 	   ;; Otherwise, try to provide a meaningful description.
-	   (if (not desc) (org-odt-link--infer-description destination info)
-	     (let ((label (org-element-property :value destination)))
-	       (format "<text:a xlink:type=\"simple\" xlink:href=\"#%s\">%s</text:a>"
-		       (org-export-solidify-link-text label)
-		       desc))))
+	   (let ((label (org-element-property :value destination)))
+	     (format "<text:a xlink:type=\"simple\" xlink:href=\"#%s\">%s</text:a>"
+		     (org-export-solidify-link-text label)
+		     (or desc (org-export-get-ordinal destination info)))))
 	  ;; Case 4: Fuzzy link points to some element (e.g., an
 	  ;; inline image, a math formula or a table).
 	  (otherwise

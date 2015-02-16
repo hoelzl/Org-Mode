@@ -1,6 +1,6 @@
 ;;; ox-beamer.el --- Beamer Back-End for Org Export Engine
 
-;; Copyright (C) 2007-2014 Free Software Foundation, Inc.
+;; Copyright (C) 2007-2015 Free Software Foundation, Inc.
 
 ;; Author: Carsten Dominik <carsten.dominik AT gmail DOT com>
 ;;         Nicolas Goaziou <n.goaziou AT gmail DOT com>
@@ -877,7 +877,8 @@ holding export options."
      "\\begin{document}\n\n"
      ;; 10. Title command.
      (org-element-normalize-string
-      (cond ((string= "" title) nil)
+      (cond ((not (plist-get info :with-title)) nil)
+	    ((string= "" title) nil)
 	    ((not (stringp org-latex-title-command)) nil)
 	    ((string-match "\\(?:[^%]\\|^\\)%s"
 			   org-latex-title-command)

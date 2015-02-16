@@ -861,6 +861,11 @@
 	  (org-test-with-temp-text "- A <point>B"
 	    (org-return t)
 	    (buffer-string))))
+  (should
+   (equal "- A\n\n- B"
+	  (org-test-with-temp-text "- A\n<point>- B"
+	    (org-return t)
+	    (buffer-string))))
   ;; Special case: on tags part of a headline, add a newline below it
   ;; instead of breaking it.
   (should
@@ -3146,6 +3151,91 @@ Text.
 
 ;;; Timestamps API
 
+(ert-deftest test-org/time-stamp ()
+  "Test `org-time-stamp' specifications."
+  ;; Insert chosen time stamp at point.
+  (should
+   (string-match
+    "Te<2014-03-04 .*?>xt"
+    (org-test-with-temp-text "Te<point>xt"
+      (flet ((org-read-date
+	      (&rest args)
+	      (apply #'encode-time (org-parse-time-string "2014-03-04"))))
+	(org-time-stamp nil)
+	(buffer-string)))))
+  ;; With a prefix argument, also insert time.
+  (should
+   (string-match
+    "Te<2014-03-04 .*? 00:41>xt"
+    (org-test-with-temp-text "Te<point>xt"
+      (flet ((org-read-date
+	      (&rest args)
+	      (apply #'encode-time (org-parse-time-string "2014-03-04 00:41"))))
+	(org-time-stamp '(4))
+	(buffer-string)))))
+  ;; With two universal prefix arguments, insert an active timestamp
+  ;; with the current time without prompting the user.
+  (should
+   (string-match
+    "Te<2014-03-04 .*? 00:41>xt"
+    (org-test-with-temp-text "Te<point>xt"
+      (flet ((current-time
+	      ()
+	      (apply #'encode-time (org-parse-time-string "2014-03-04 00:41"))))
+	(org-time-stamp '(16))
+	(buffer-string)))))
+  ;; When optional argument is non-nil, insert an inactive timestamp.
+  (should
+   (string-match
+    "Te\\[2014-03-04 .*?\\]xt"
+    (org-test-with-temp-text "Te<point>xt"
+      (flet ((org-read-date
+	      (&rest args)
+	      (apply #'encode-time (org-parse-time-string "2014-03-04"))))
+	(org-time-stamp nil t)
+	(buffer-string)))))
+  ;; When called from a timestamp, replace existing one.
+  (should
+   (string-match
+    "<2014-03-04 .*?>"
+    (org-test-with-temp-text "<2012-03-29<point> thu.>"
+      (flet ((org-read-date
+	      (&rest args)
+	      (apply #'encode-time (org-parse-time-string "2014-03-04"))))
+	(org-time-stamp nil)
+	(buffer-string)))))
+  (should
+   (string-match
+    "<2014-03-04 .*?>--<2014-03-04 .*?>"
+    (org-test-with-temp-text "<2012-03-29<point> thu.>--<2014-03-04 tue.>"
+      (flet ((org-read-date
+	      (&rest args)
+	      (apply #'encode-time (org-parse-time-string "2014-03-04"))))
+	(org-time-stamp nil)
+	(buffer-string)))))
+  ;; When replacing a timestamp, preserve repeater, if any.
+  (should
+   (string-match
+    "<2014-03-04 .*? \\+2y>"
+    (org-test-with-temp-text "<2012-03-29<point> thu. +2y>"
+      (flet ((org-read-date
+	      (&rest args)
+	      (apply #'encode-time (org-parse-time-string "2014-03-04"))))
+	(org-time-stamp nil)
+	(buffer-string)))))
+  ;; When called twice in a raw, build a date range.
+  (should
+   (string-match
+    "<2012-03-29 .*?>--<2014-03-04 .*?>"
+    (org-test-with-temp-text "<2012-03-29 thu.><point>"
+      (flet ((org-read-date
+	      (&rest args)
+	      (apply #'encode-time (org-parse-time-string "2014-03-04"))))
+	(let ((last-command 'org-time-stamp)
+	      (this-command 'org-time-stamp))
+	  (org-time-stamp nil))
+	(buffer-string))))))
+
 (ert-deftest test-org/timestamp-has-time-p ()
   "Test `org-timestamp-has-time-p' specifications."
   ;; With time.
@@ -3214,14 +3304,7 @@ Text.
    (org-test-with-temp-text "<%%(org-float t 4 2)>"
      (let* ((ts-orig (org-element-context))
 	    (ts-copy (org-timestamp-split-range ts-orig)))
-       (eq ts-orig ts-copy))))
-  ;; Check that parent is the same when a range was split.
-  (should
-   (org-test-with-temp-text "[2012-03-29 Thu]--[2012-03-30 Fri]"
-     (let* ((ts-orig (org-element-context))
-	    (ts-copy (org-timestamp-split-range ts-orig)))
-       (eq (org-element-property :parent ts-orig)
-	   (org-element-property :parent ts-copy))))))
+       (eq ts-orig ts-copy)))))
 
 (ert-deftest test-org/timestamp-translate ()
   "Test `org-timestamp-translate' specifications."

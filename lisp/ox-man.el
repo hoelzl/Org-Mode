@@ -1,6 +1,6 @@
 ;; ox-man.el --- Man Back-End for Org Export Engine
 
-;; Copyright (C) 2011-2014 Free Software Foundation, Inc.
+;; Copyright (C) 2011-2015 Free Software Foundation, Inc.
 
 ;; Author: Nicolas Goaziou <n.goaziou at gmail dot com>
 ;;      Luis R Anaya <papoanaya aroba hot mail punto com>
@@ -311,7 +311,8 @@ This function shouldn't be used for floats.  See
   "Return complete document string after Man conversion.
 CONTENTS is the transcoded contents string.  INFO is a plist
 holding export options."
-  (let* ((title (org-export-data (plist-get info :title) info))
+  (let* ((title (when (plist-get info :with-title)
+		  (org-export-data (plist-get info :title) info)))
         (attr (read (format "(%s)"
                             (mapconcat
                              #'identity

@@ -1,6 +1,6 @@
 ;;; ox-latex.el --- LaTeX Back-End for Org Export Engine
 
-;; Copyright (C) 2011-2014 Free Software Foundation, Inc.
+;; Copyright (C) 2011-2015 Free Software Foundation, Inc.
 
 ;; Author: Nicolas Goaziou <n.goaziou at gmail dot com>
 ;; Keywords: outlines, hypermedia, calendar, wp
@@ -205,9 +205,6 @@
 					  ("qbordermatrix" . "\\cr")
 					  ("kbordermatrix" . "\\\\"))
   "Alist between matrix macros and their row ending.")
-
-(defconst org-latex-pseudo-objects '(latex-math-block)
-  "List of pseudo-object types introduced in the back-end.")
 
 
 
@@ -1263,7 +1260,8 @@ holding export options."
      ;; Title command.
      (let ((command (plist-get info :latex-title-command)))
        (org-element-normalize-string
-	(cond ((string= "" title) nil)
+	(cond ((not (plist-get info :with-title)) nil)
+	      ((string= "" title) nil)
 	      ((not (stringp command)) nil)
 	      ((string-match "\\(?:[^%]\\|^\\)%s" command)
 	       (format command title))
@@ -2643,8 +2641,7 @@ contextual information."
 	(format "\\begin{verbatim}\n%s\n\\end{verbatim}"
 		;; Re-create table, without affiliated keywords.
 		(org-trim (org-element-interpret-data
-			   `(table nil ,@(org-element-contents table))
-			   org-latex-pseudo-objects))))
+			   `(table nil ,@(org-element-contents table))))))
        ;; Case 2: Matrix.
        ((or (string= type "math") (string= type "inline-math"))
 	(org-latex--math-table table info))
@@ -2841,9 +2838,7 @@ This function assumes TABLE has `org' as its `:type' property and
 	       (concat
 		(mapconcat
 		 (lambda (cell)
-		   (substring
-		    (org-element-interpret-data cell org-latex-pseudo-objects)
-		    0 -1))
+		   (substring (org-element-interpret-data cell) 0 -1))
 		 (org-element-map row 'table-cell #'identity info) "&")
 		(or (cdr (assoc env org-latex-table-matrix-macros)) "\\\\")
 		"\n")))

@@ -10732,6 +10732,10 @@ Configure inclusion of creator info into exported file.  It may be set to
 Toggle inclusion of drawers, or list drawers to include
 (@code{org-export-with-drawers}).
 
+@item date:
+@vindex org-export-with-date
+Toggle inclusion of a date into exported file (@code{org-export-with-date}).
+
 @item e:
 @vindex org-export-with-entities
 Toggle inclusion of entities (@code{org-export-with-entities}).
@@ -10805,6 +10809,10 @@ Configure export of @LaTeX{} fragments and environments.  It may be set to
 Toggle inclusion of the creation time into exported file
 (@code{org-export-time-stamp-file}).
 
+@item title:
+@vindex org-export-with-title
+Toggle inclusion of title (@code{org-export-with-title}).
+
 @item toc:
 @vindex org-export-with-toc
 Toggle inclusion of the table of contents, or set the level limit
@@ -10818,6 +10826,7 @@ Toggle inclusion of TODO keywords into exported text
 @item |:
 @vindex org-export-with-tables
 Toggle inclusion of tables (@code{org-export-with-tables}).
+
 @end table
 
 When exporting only a subtree, each of the previous keywords@footnote{With
@@ -13859,6 +13868,7 @@ however, override everything.
 @item @code{:select-tags}           @tab @code{org-export-select-tags}
 @item @code{:with-author}           @tab @code{org-export-with-author}
 @item @code{:with-creator}          @tab @code{org-export-with-creator}
+@item @code{:with-date}             @tab @code{org-export-with-date}
 @item @code{:with-drawers}          @tab @code{org-export-with-drawers}
 @item @code{:with-email}            @tab @code{org-export-with-email}
 @item @code{:with-emphasize}        @tab @code{org-export-with-emphasize}
@@ -13874,6 +13884,7 @@ however, override everything.
 @item @code{:with-tags}             @tab @code{org-export-with-tags}
 @item @code{:with-tasks}            @tab @code{org-export-with-tasks}
 @item @code{:with-timestamps}       @tab @code{org-export-with-timestamps}
+@item @code{:with-title}            @tab @code{org-export-with-title}
 @item @code{:with-toc}              @tab @code{org-export-with-toc}
 @item @code{:with-todo-keywords}    @tab @code{org-export-with-todo-keywords}
 @end multitable
@@ -15987,10 +15998,11 @@ code block execution.  When a post argument is given, the results of the code
 block will temporarily be bound to the @code{*this*} variable.  This variable
 may then be included in header argument forms such as those used in @ref{var}
 header argument specifications allowing passing of results to other code
-blocks, or direct execution via Emacs Lisp.
+blocks, or direct execution via Emacs Lisp.  Additional header arguments may
+be passed to the @code{:post}-function.
 
-The following example illustrates the usage of the @code{:post} header
-argument.
+The following two examples illustrate the usage of the @code{:post} header
+argument.  The first example shows how to attach a attribute-line via @code{:post}.
 
 @example
 #+name: attr_wrap
@@ -16013,6 +16025,31 @@ argument.
 #+ATTR_LATEX :width 5cm
 [[file:/tmp/it.png]]
 :END:
+@end example
+
+The second examples shows how to use @code{:post} together with the
+@code{:colnames} header argument.
+@example
+#+name: round-tbl
+#+begin_src emacs-lisp :var tbl="" fmt="%.3f"
+  (mapcar (lambda (row)
+            (mapcar (lambda (cell)
+                      (if (numberp cell)
+                          (format fmt cell)
+                        cell))
+                    row))
+          tbl)
+#+end_src
+
+#+begin_src R :colnames yes :post round-tbl[:colnames yes](*this*)
+set.seed(42)
+data.frame(foo=rnorm(1))
+#+end_src
+
+#+RESULTS:
+|   foo |
+|-------|
+| 1.371 |
 @end example
 
 @node prologue

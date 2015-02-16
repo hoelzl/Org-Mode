@@ -249,6 +249,10 @@ specially in `org-element--object-lex'.")
 	 superscript table-cell underline)
   "List of recursive object types.")
 
+(defconst org-element-object-containers
+  (append org-element-recursive-objects '(paragraph table-row verse-block))
+  "List of object or element types that can directly contain objects.")
+
 (defvar org-element-block-name-alist
   '(("CENTER" . org-element-center-block-parser)
     ("COMMENT" . org-element-comment-block-parser)
@@ -354,7 +358,7 @@ Don't modify it, set `org-element-affiliated-keywords' instead.")
       (inlinetask ,@standard-set-no-line-break)
       (italic ,@standard-set)
       (item ,@standard-set-no-line-break)
-      (keyword ,@standard-set)
+      (keyword ,@(remq 'footnote-reference standard-set))
       ;; Ignore all links excepted plain links in a link description.
       ;; Also ignore radio-targets and line breaks.
       (link bold code entity export-snippet inline-babel-call inline-src-block
@@ -396,6 +400,15 @@ still has an entry since one of its properties (`:title') does.")
     (item . :tag))
   "Alist between element types and location of secondary value.")
 
+(defconst org-element--pair-square-table
+  (let ((table (make-syntax-table)))
+    (modify-syntax-entry ?\[ "(]" table)
+    (modify-syntax-entry ?\] ")[" table)
+    (dolist (char '(?\{ ?\} ?\( ?\) ?\< ?\>) table)
+      (modify-syntax-entry char " " table)))
+  "Table used internally to pair only square brackets.
+Other brackets are treated as spaces.")
+
 
 
 ;;; Accessors and Setters
@@ -412,7 +425,8 @@ still has an entry since one of its properties (`:title') does.")
 ;; high-level functions useful to modify a parse tree.
 ;;
 ;; `org-element-secondary-p' is a predicate used to know if a given
-;; object belongs to a secondary string.
+;; object belongs to a secondary string.  `org-element-copy' returns
+;; an element or object, stripping its parent property in the process.
 
 (defsubst org-element-type (element)
   "Return type of ELEMENT.
@@ -560,6 +574,19 @@ The function takes care of setting `:parent' property for NEW."
     (setcar (cdr old) (nth 1 new))
     ;; Transfer type.
     (setcar old (car new))))
+
+(defun org-element-copy (datum)
+  "Return a copy of DATUM.
+DATUM is an element, object, string or nil.  `:parent' property
+is cleared and contents are removed in the process."
+  (when datum
+    (let ((type (org-element-type datum)))
+      (case type
+	(org-data (list 'org-data nil))
+	(plain-text (substring-no-properties datum))
+	((nil) (copy-sequence datum))
+	(otherwise
+	 (list type (plist-put (copy-sequence (nth 1 datum)) :parent nil)))))))
 
 
 
@@ -2774,35 +2801,31 @@ When at a footnote reference, return a list whose car is
 `footnote-reference' and cdr a plist with `:label', `:type',
 `:begin', `:end', `:content-begin', `:contents-end' and
 `:post-blank' as keywords.  Otherwise, return nil."
-  (catch 'no-object
-    (when (looking-at org-footnote-re)
-      (save-excursion
-	(let* ((begin (point))
-	       (label
-		(or (org-match-string-no-properties 2)
-		    (org-match-string-no-properties 3)
-		    (and (match-string 1)
-			 (concat "fn:" (org-match-string-no-properties 1)))))
-	       (type (if (or (not label) (match-string 1)) 'inline 'standard))
-	       (inner-begin (match-end 0))
-	       (inner-end
-		(let ((count 1))
-		  (forward-char)
-		  (while (and (> count 0) (re-search-forward "[][]" nil t))
-		    (if (equal (match-string 0) "[") (incf count) (decf count)))
-		  (unless (zerop count) (throw 'no-object nil))
-		  (1- (point))))
-	       (post-blank (progn (goto-char (1+ inner-end))
-				  (skip-chars-forward " \t")))
-	       (end (point)))
-	  (list 'footnote-reference
-		(list :label label
-		      :type type
-		      :begin begin
-		      :end end
-		      :contents-begin (and (eq type 'inline) inner-begin)
-		      :contents-end (and (eq type 'inline) inner-end)
-		      :post-blank post-blank)))))))
+  (when (looking-at org-footnote-re)
+    (let ((closing (with-syntax-table org-element--pair-square-table
+		     (ignore-errors (scan-lists (point) 1 0)))))
+      (when closing
+	(save-excursion
+	  (let* ((begin (point))
+		 (label
+		  (or (org-match-string-no-properties 2)
+		      (org-match-string-no-properties 3)
+		      (and (match-string 1)
+			   (concat "fn:" (org-match-string-no-properties 1)))))
+		 (type (if (or (not label) (match-string 1)) 'inline 'standard))
+		 (inner-begin (match-end 0))
+		 (inner-end (1- closing))
+		 (post-blank (progn (goto-char closing)
+				    (skip-chars-forward " \t")))
+		 (end (point)))
+	    (list 'footnote-reference
+		  (list :label label
+			:type type
+			:begin begin
+			:end end
+			:contents-begin (and (eq type 'inline) inner-begin)
+			:contents-end (and (eq type 'inline) inner-end)
+			:post-blank post-blank))))))))
 
 (defun org-element-footnote-reference-interpreter (footnote-reference contents)
   "Interpret FOOTNOTE-REFERENCE object as Org syntax.
@@ -4339,30 +4362,18 @@ the current object."
 ;; `org-element--interpret-affiliated-keywords'.
 
 ;;;###autoload
-(defun org-element-interpret-data (data &optional pseudo-objects)
+(defun org-element-interpret-data (data)
   "Interpret DATA as Org syntax.
-
 DATA is a parse tree, an element, an object or a secondary string
-to interpret.
+to interpret.  Return Org syntax as a string."
+  (org-element--interpret-data-1 data nil))
 
-Optional argument PSEUDO-OBJECTS is a list of symbols defining
-new types that should be treated as objects.  An unknown type not
-belonging to this list is seen as a pseudo-element instead.  Both
-pseudo-objects and pseudo-elements are transparent entities, i.e.
-only their contents are interpreted.
-
-Return Org syntax as a string."
-  (org-element--interpret-data-1 data nil pseudo-objects))
-
-(defun org-element--interpret-data-1 (data parent pseudo-objects)
+(defun org-element--interpret-data-1 (data parent)
   "Interpret DATA as Org syntax.
 
 DATA is a parse tree, an element, an object or a secondary string
 to interpret.  PARENT is used for recursive calls.  It contains
-the element or object containing data, or nil.  PSEUDO-OBJECTS
-are list of symbols defining new element or object types.
-Unknown types that don't belong to this list are treated as
-pseudo-elements instead.
+the element or object containing data, or nil.
 
 Return Org syntax as a string."
   (let* ((type (org-element-type data))
@@ -4377,15 +4388,11 @@ Return Org syntax as a string."
 	   ;; Secondary string.
 	   ((not type)
 	    (mapconcat
-	     (lambda (obj)
-	       (org-element--interpret-data-1 obj parent pseudo-objects))
-	     data ""))
+	     (lambda (obj) (org-element--interpret-data-1 obj parent)) data ""))
 	   ;; Full Org document.
 	   ((eq type 'org-data)
-	    (mapconcat
-	     (lambda (obj)
-	       (org-element--interpret-data-1 obj parent pseudo-objects))
-	     (org-element-contents data) ""))
+	    (mapconcat (lambda (obj) (org-element--interpret-data-1 obj parent))
+		       (org-element-contents data) ""))
 	   ;; Plain text: return it.
 	   ((stringp data) data)
 	   ;; Element or object without contents.
@@ -4395,8 +4402,7 @@ Return Org syntax as a string."
 	    (funcall interpret data
 		     ;; Recursively interpret contents.
 		     (mapconcat
-		      (lambda (obj)
-			(org-element--interpret-data-1 obj data pseudo-objects))
+		      (lambda (obj) (org-element--interpret-data-1 obj data))
 		      (org-element-contents
 		       (if (not (memq type '(paragraph verse-block)))
 			   data
@@ -4418,7 +4424,10 @@ Return Org syntax as a string."
       ;; specified, assume its value is 0.
       (let ((post-blank (or (org-element-property :post-blank data) 0)))
 	(if (or (memq type org-element-all-objects)
-		(memq type pseudo-objects))
+		(and parent
+		     (let ((type (org-element-type parent)))
+		       (or (not type)
+			   (memq type org-element-object-containers)))))
 	    (concat results (make-string post-blank ?\s))
 	  (concat
 	   (org-element--interpret-affiliated-keywords data)
