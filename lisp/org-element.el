@@ -207,7 +207,7 @@ specially in `org-element--object-lex'.")
 		      "\\$"
 		      ;; Objects starting with "\": line break,
 		      ;; entity, latex fragment.
-		      "\\\\\\(?:[a-zA-Z[(]\\|\\\\[ \t]*$\\)"
+		      "\\\\\\(?:[a-zA-Z[(]\\|\\\\[ \t]*$\\|_ +\\)"
 		      ;; Objects starting with raw text: inline Babel
 		      ;; source block, inline Babel call.
 		      "\\(?:call\\|src\\)_"))
@@ -248,6 +248,10 @@ specially in `org-element--object-lex'.")
   '(bold footnote-reference italic link subscript radio-target strike-through
 	 superscript table-cell underline)
   "List of recursive object types.")
+
+(defconst org-element-object-containers
+  (append org-element-recursive-objects '(paragraph table-row verse-block))
+  "List of object or element types that can directly contain objects.")
 
 (defvar org-element-block-name-alist
   '(("CENTER" . org-element-center-block-parser)
@@ -354,7 +358,7 @@ Don't modify it, set `org-element-affiliated-keywords' instead.")
       (inlinetask ,@standard-set-no-line-break)
       (italic ,@standard-set)
       (item ,@standard-set-no-line-break)
-      (keyword ,@standard-set)
+      (keyword ,@(remq 'footnote-reference standard-set))
       ;; Ignore all links excepted plain links in a link description.
       ;; Also ignore radio-targets and line breaks.
       (link bold code entity export-snippet inline-babel-call inline-src-block
@@ -391,10 +395,19 @@ This alist also applies to secondary string.  For example, an
 still has an entry since one of its properties (`:title') does.")
 
 (defconst org-element-secondary-value-alist
-  '((headline . :title)
-    (inlinetask . :title)
-    (item . :tag))
-  "Alist between element types and location of secondary value.")
+  '((headline :title)
+    (inlinetask :title)
+    (item :tag))
+  "Alist between element types and locations of secondary values.")
+
+(defconst org-element--pair-square-table
+  (let ((table (make-syntax-table)))
+    (modify-syntax-entry ?\[ "(]" table)
+    (modify-syntax-entry ?\] ")[" table)
+    (dolist (char '(?\{ ?\} ?\( ?\) ?\< ?\>) table)
+      (modify-syntax-entry char " " table)))
+  "Table used internally to pair only square brackets.
+Other brackets are treated as spaces.")
 
 
 
@@ -412,7 +425,8 @@ still has an entry since one of its properties (`:title') does.")
 ;; high-level functions useful to modify a parse tree.
 ;;
 ;; `org-element-secondary-p' is a predicate used to know if a given
-;; object belongs to a secondary string.
+;; object belongs to a secondary string.  `org-element-copy' returns
+;; an element or object, stripping its parent property in the process.
 
 (defsubst org-element-type (element)
   "Return type of ELEMENT.
@@ -452,22 +466,22 @@ Return modified element."
     element))
 
 (defsubst org-element-set-contents (element &rest contents)
-  "Set ELEMENT contents to CONTENTS.
-Return modified element."
+  "Set ELEMENT contents to CONTENTS."
   (cond ((not element) (list contents))
 	((not (symbolp (car element))) contents)
 	((cdr element) (setcdr (cdr element) contents))
 	(t (nconc element contents))))
 
 (defun org-element-secondary-p (object)
-  "Non-nil when OBJECT belongs to a secondary string.
+  "Non-nil when OBJECT directly belongs to a secondary string.
 Return value is the property name, as a keyword, or nil."
   (let* ((parent (org-element-property :parent object))
-	 (property (cdr (assq (org-element-type parent)
-			      org-element-secondary-value-alist))))
-    (and property
-	 (memq object (org-element-property property parent))
-	 property)))
+	 (properties (cdr (assq (org-element-type parent)
+				org-element-secondary-value-alist))))
+    (catch 'exit
+      (dolist (p properties)
+	(and (memq object (org-element-property p parent))
+	     (throw 'exit p))))))
 
 (defsubst org-element-adopt-elements (parent &rest children)
   "Append elements to the contents of another element.
@@ -561,6 +575,19 @@ The function takes care of setting `:parent' property for NEW."
     ;; Transfer type.
     (setcar old (car new))))
 
+(defun org-element-copy (datum)
+  "Return a copy of DATUM.
+DATUM is an element, object, string or nil.  `:parent' property
+is cleared and contents are removed in the process."
+  (when datum
+    (let ((type (org-element-type datum)))
+      (case type
+	(org-data (list 'org-data nil))
+	(plain-text (substring-no-properties datum))
+	((nil) (copy-sequence datum))
+	(otherwise
+	 (list type (plist-put (copy-sequence (nth 1 datum)) :parent nil)))))))
+
 
 
 ;;; Greater elements
@@ -572,7 +599,7 @@ The function takes care of setting `:parent' property for NEW."
 ;; Most of them accepts no argument.  Though, exceptions exist.  Hence
 ;; every element containing a secondary string (see
 ;; `org-element-secondary-value-alist') will accept an optional
-;; argument to toggle parsing of that secondary string.  Moreover,
+;; argument to toggle parsing of these secondary strings.  Moreover,
 ;; `item' parser requires current list's structure as its first
 ;; element.
 ;;
@@ -2695,7 +2722,7 @@ a plist with `:begin', `:end', `:latex', `:latex-math-p',
 
 Assume point is at the beginning of the entity."
   (catch 'no-object
-    (when (looking-at "\\\\\\(there4\\|sup[123]\\|frac[13][24]\\|[a-zA-Z]+\\)\\($\\|{}\\|[^[:alpha:]]\\)")
+    (when (looking-at "\\\\\\(?:\\(?1:_ +\\)\\|\\(?1:there4\\|sup[123]\\|frac[13][24]\\|[a-zA-Z]+\\)\\(?2:$\\|{}\\|[^[:alpha:]]\\)\\)")
       (save-excursion
 	(let* ((value (or (org-entity-get (match-string 1))
 			  (throw 'no-object nil)))
@@ -2774,35 +2801,31 @@ When at a footnote reference, return a list whose car is
 `footnote-reference' and cdr a plist with `:label', `:type',
 `:begin', `:end', `:content-begin', `:contents-end' and
 `:post-blank' as keywords.  Otherwise, return nil."
-  (catch 'no-object
-    (when (looking-at org-footnote-re)
-      (save-excursion
-	(let* ((begin (point))
-	       (label
-		(or (org-match-string-no-properties 2)
-		    (org-match-string-no-properties 3)
-		    (and (match-string 1)
-			 (concat "fn:" (org-match-string-no-properties 1)))))
-	       (type (if (or (not label) (match-string 1)) 'inline 'standard))
-	       (inner-begin (match-end 0))
-	       (inner-end
-		(let ((count 1))
-		  (forward-char)
-		  (while (and (> count 0) (re-search-forward "[][]" nil t))
-		    (if (equal (match-string 0) "[") (incf count) (decf count)))
-		  (unless (zerop count) (throw 'no-object nil))
-		  (1- (point))))
-	       (post-blank (progn (goto-char (1+ inner-end))
-				  (skip-chars-forward " \t")))
-	       (end (point)))
-	  (list 'footnote-reference
-		(list :label label
-		      :type type
-		      :begin begin
-		      :end end
-		      :contents-begin (and (eq type 'inline) inner-begin)
-		      :contents-end (and (eq type 'inline) inner-end)
-		      :post-blank post-blank)))))))
+  (when (looking-at org-footnote-re)
+    (let ((closing (with-syntax-table org-element--pair-square-table
+		     (ignore-errors (scan-lists (point) 1 0)))))
+      (when closing
+	(save-excursion
+	  (let* ((begin (point))
+		 (label
+		  (or (org-match-string-no-properties 2)
+		      (org-match-string-no-properties 3)
+		      (and (match-string 1)
+			   (concat "fn:" (org-match-string-no-properties 1)))))
+		 (type (if (or (not label) (match-string 1)) 'inline 'standard))
+		 (inner-begin (match-end 0))
+		 (inner-end (1- closing))
+		 (post-blank (progn (goto-char closing)
+				    (skip-chars-forward " \t")))
+		 (end (point)))
+	    (list 'footnote-reference
+		  (list :label label
+			:type type
+			:begin begin
+			:end end
+			:contents-begin (and (eq type 'inline) inner-begin)
+			:contents-end (and (eq type 'inline) inner-end)
+			:post-blank post-blank))))))))
 
 (defun org-element-footnote-reference-interpreter (footnote-reference contents)
   "Interpret FOOTNOTE-REFERENCE object as Org syntax.
@@ -2975,7 +2998,7 @@ Assume point is at the beginning of the line break."
 	     (not (eq (char-before) ?\\)))
     (list 'line-break
 	  (list :begin (point)
-		:end (progn (forward-line) (point))
+		:end (line-beginning-position 2)
 		:post-blank 0))))
 
 (defun org-element-line-break-interpreter (line-break contents)
@@ -3917,20 +3940,25 @@ looked after.
 
 Optional argument PARENT, when non-nil, is the element or object
 containing the secondary string.  It is used to set correctly
-`:parent' property within the string."
-  (let ((local-variables (buffer-local-variables)))
-    (with-temp-buffer
-      (dolist (v local-variables)
-	(ignore-errors
-	  (if (symbolp v) (makunbound v)
-	    (org-set-local (car v) (cdr v)))))
-      (insert string)
-      (restore-buffer-modified-p nil)
-      (let ((secondary (org-element--parse-objects
-			(point-min) (point-max) nil restriction)))
-	(when parent
-	  (dolist (o secondary) (org-element-put-property o :parent parent)))
-	secondary))))
+`:parent' property within the string.
+
+If STRING is the empty string or nil, return nil."
+  (cond
+   ((not string) nil)
+   ((equal string "") nil)
+   (t (let ((local-variables (buffer-local-variables)))
+	(with-temp-buffer
+	  (dolist (v local-variables)
+	    (ignore-errors
+	      (if (symbolp v) (makunbound v)
+		(org-set-local (car v) (cdr v)))))
+	  (insert string)
+	  (restore-buffer-modified-p nil)
+	  (let ((data (org-element--parse-objects
+		       (point-min) (point-max) nil restriction)))
+	    (when parent
+	      (dolist (o data) (org-element-put-property o :parent parent)))
+	    data))))))
 
 (defun org-element-map
     (data types fun &optional info first-match no-recursion with-affiliated)
@@ -4042,11 +4070,9 @@ looking into captions:
 		;; If --DATA has a secondary string that can contain
 		;; objects with their type among TYPES, look into it.
 		(when (and (eq --category 'objects) (not (stringp --data)))
-		  (let ((sec-prop
-			 (assq --type org-element-secondary-value-alist)))
-		    (when sec-prop
-		      (funcall --walk-tree
-			       (org-element-property (cdr sec-prop) --data)))))
+		  (dolist (p (cdr (assq --type
+					org-element-secondary-value-alist)))
+		    (funcall --walk-tree (org-element-property p --data))))
 		;; If --DATA has any parsed affiliated keywords and
 		;; WITH-AFFILIATED is non-nil, look for objects in
 		;; them.
@@ -4339,30 +4365,18 @@ the current object."
 ;; `org-element--interpret-affiliated-keywords'.
 
 ;;;###autoload
-(defun org-element-interpret-data (data &optional pseudo-objects)
+(defun org-element-interpret-data (data)
   "Interpret DATA as Org syntax.
-
 DATA is a parse tree, an element, an object or a secondary string
-to interpret.
+to interpret.  Return Org syntax as a string."
+  (org-element--interpret-data-1 data nil))
 
-Optional argument PSEUDO-OBJECTS is a list of symbols defining
-new types that should be treated as objects.  An unknown type not
-belonging to this list is seen as a pseudo-element instead.  Both
-pseudo-objects and pseudo-elements are transparent entities, i.e.
-only their contents are interpreted.
-
-Return Org syntax as a string."
-  (org-element--interpret-data-1 data nil pseudo-objects))
-
-(defun org-element--interpret-data-1 (data parent pseudo-objects)
+(defun org-element--interpret-data-1 (data parent)
   "Interpret DATA as Org syntax.
 
 DATA is a parse tree, an element, an object or a secondary string
 to interpret.  PARENT is used for recursive calls.  It contains
-the element or object containing data, or nil.  PSEUDO-OBJECTS
-are list of symbols defining new element or object types.
-Unknown types that don't belong to this list are treated as
-pseudo-elements instead.
+the element or object containing data, or nil.
 
 Return Org syntax as a string."
   (let* ((type (org-element-type data))
@@ -4377,15 +4391,11 @@ Return Org syntax as a string."
 	   ;; Secondary string.
 	   ((not type)
 	    (mapconcat
-	     (lambda (obj)
-	       (org-element--interpret-data-1 obj parent pseudo-objects))
-	     data ""))
+	     (lambda (obj) (org-element--interpret-data-1 obj parent)) data ""))
 	   ;; Full Org document.
 	   ((eq type 'org-data)
-	    (mapconcat
-	     (lambda (obj)
-	       (org-element--interpret-data-1 obj parent pseudo-objects))
-	     (org-element-contents data) ""))
+	    (mapconcat (lambda (obj) (org-element--interpret-data-1 obj parent))
+		       (org-element-contents data) ""))
 	   ;; Plain text: return it.
 	   ((stringp data) data)
 	   ;; Element or object without contents.
@@ -4395,8 +4405,7 @@ Return Org syntax as a string."
 	    (funcall interpret data
 		     ;; Recursively interpret contents.
 		     (mapconcat
-		      (lambda (obj)
-			(org-element--interpret-data-1 obj data pseudo-objects))
+		      (lambda (obj) (org-element--interpret-data-1 obj data))
 		      (org-element-contents
 		       (if (not (memq type '(paragraph verse-block)))
 			   data
@@ -4418,7 +4427,10 @@ Return Org syntax as a string."
       ;; specified, assume its value is 0.
       (let ((post-blank (or (org-element-property :post-blank data) 0)))
 	(if (or (memq type org-element-all-objects)
-		(memq type pseudo-objects))
+		(and parent
+		     (let ((type (org-element-type parent)))
+		       (or (not type)
+			   (memq type org-element-object-containers)))))
 	    (concat results (make-string post-blank ?\s))
 	  (concat
 	   (org-element--interpret-affiliated-keywords data)
@@ -4507,25 +4519,29 @@ indentation is not done with TAB characters."
 	 (find-min-ind
 	  ;; Return minimal common indentation within BLOB.  This is
 	  ;; done by walking recursively BLOB and updating MIN-IND
-	  ;; along the way.  FIRST-FLAG is non-nil when the first
-	  ;; string hasn't been seen yet.  It is required as this
-	  ;; string is the only one whose indentation doesn't happen
-	  ;; after a newline character.
+	  ;; along the way.  FIRST-FLAG is non-nil when the next
+	  ;; object is expected to be a string that doesn't start with
+	  ;; a newline character.  It happens for strings at the
+	  ;; beginnings of the contents or right after a line break.
 	  (lambda (blob first-flag)
 	    (dolist (object (org-element-contents blob))
-	      (when (and first-flag (stringp object))
+	      (when first-flag
 		(setq first-flag nil)
-		(string-match "\\` *" object)
-		(let ((len (match-end 0)))
-		  ;; An indentation of zero means no string will be
-		  ;; modified.  Quit the process.
-		  (if (zerop len) (throw 'zero (setq min-ind 0))
-		    (setq min-ind (min len min-ind)))))
+		;; Objects cannot start with spaces: in this case,
+		;; indentation is 0.
+		(if (not (stringp object)) (throw 'zero (setq min-ind 0))
+		  (string-match "\\` *" object)
+		  (let ((len (match-end 0)))
+		    ;; An indentation of zero means no string will be
+		    ;; modified.  Quit the process.
+		    (if (zerop len) (throw 'zero (setq min-ind 0))
+		      (setq min-ind (min len min-ind))))))
 	      (cond
 	       ((stringp object)
 		(dolist (line (cdr (org-split-string object " *\n")))
 		  (unless (string= line "")
 		    (setq min-ind (min (org-get-indentation line) min-ind)))))
+	       ((eq (org-element-type object) 'line-break) (setq first-flag t))
 	       ((memq (org-element-type object) org-element-recursive-objects)
 		(funcall find-min-ind object first-flag)))))))
     ;; Find minimal indentation in ELEMENT.
@@ -4535,31 +4551,35 @@ indentation is not done with TAB characters."
       ;; string minus common indentation.
       (let* (build			; For byte compiler.
 	     (build
-	      (function
-	       (lambda (blob first-flag)
-		 ;; Return BLOB with all its strings indentation
-		 ;; shortened from MIN-IND white spaces.  FIRST-FLAG
-		 ;; is non-nil when the first string hasn't been seen
-		 ;; yet.
-		 (setcdr (cdr blob)
-			 (mapcar
-			  #'(lambda (object)
-			      (when (and first-flag (stringp object))
-				(setq first-flag nil)
-				(setq object
-				      (replace-regexp-in-string
-				       (format "\\` \\{%d\\}" min-ind)
-				       "" object)))
-			      (cond
-			       ((stringp object)
-				(replace-regexp-in-string
-				 (format "\n \\{%d\\}" min-ind) "\n" object))
-			       ((memq (org-element-type object)
-				      org-element-recursive-objects)
-				(funcall build object first-flag))
-			       (t object)))
-			  (org-element-contents blob)))
-		 blob))))
+	      (lambda (blob first-flag)
+		;; Return BLOB with all its strings indentation
+		;; shortened from MIN-IND white spaces.  FIRST-FLAG is
+		;; non-nil when the next object is expected to be
+		;; a string that doesn't start with a newline
+		;; character.
+		(setcdr (cdr blob)
+			(mapcar
+			 (lambda (object)
+			   (when first-flag
+			     (setq first-flag nil)
+			     (when (stringp object)
+			       (setq object
+				     (replace-regexp-in-string
+				      (format "\\` \\{%d\\}" min-ind)
+				      "" object))))
+			   (cond
+			    ((stringp object)
+			     (replace-regexp-in-string
+			      (format "\n \\{%d\\}" min-ind) "\n" object))
+			    ((memq (org-element-type object)
+				   org-element-recursive-objects)
+			     (funcall build object first-flag))
+			    ((eq (org-element-type object) 'line-break)
+			     (setq first-flag t)
+			     object)
+			    (t object)))
+			 (org-element-contents blob)))
+		blob)))
 	(funcall build element (not ignore-first))))))
 
 
